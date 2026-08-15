@@ -1,0 +1,42 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "main": ".open-next/worker.js",
+  "name": "virtual-office-web",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "virtual-office-web",
+    },
+  ],
+  "observability": {
+    "enabled": true,
+  },
+  "vars": {
+    "NEXT_PUBLIC_APP_ENV": "development",
+  },
+  "env": {
+    "staging": {
+      "name": "virtual-office-staging",
+      "vars": {
+        "NEXT_PUBLIC_APP_ENV": "staging",
+        "NEXT_PUBLIC_SUPABASE_URL": "https://qubocpsbxtirmhzhcima.supabase.co",
+        "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_WdWeBu3QVhRpRZYlXt4Yww_k2GYaUrY",
+        "NEXT_PUBLIC_REALTIME_WS_URL": "https://virtual-office-realtime-staging.mhcave.workers.dev",
+      },
+      "services": [
+        {
+          "binding": "WORKER_SELF_REFERENCE",
+          "service": "virtual-office-staging",
+        },
+      ],
+    },
+  },
+}

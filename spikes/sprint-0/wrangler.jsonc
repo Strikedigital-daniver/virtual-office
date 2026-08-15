@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "virtual-office-sprint-0",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "OFFICE_ROOMS",
+        "class_name": "OfficeRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OfficeRoom"]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "env": {
+    "staging": {
+      "name": "virtual-office-sprint-0-staging",
+      "vars": {
+        "ALLOWED_ORIGIN": "https://virtual-office-sprint-0-staging.mhcave.workers.dev"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "OFFICE_ROOMS",
+            "class_name": "OfficeRoom"
+          }
+        ]
+      }
+    }
+  }
+}

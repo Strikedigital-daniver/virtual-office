@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+.next
+.open-next
+.wrangler
+.supabase
+package-lock.json
+docs/MASTER_SPEC.md

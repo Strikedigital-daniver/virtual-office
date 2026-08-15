@@ -1,0 +1,40 @@
+{
+  "name": "virtual-office",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "spikes/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:web": "npm run dev --workspace @virtual-office/web",
+    "dev:worker": "npm run dev --workspace @virtual-office/realtime-worker",
+    "dev:supabase": "supabase start",
+    "lint": "npm run lint --workspaces --if-present && prettier --check \"apps/**/*.{ts,tsx,js,json,jsonc,css}\" \"packages/**/*.{ts,json}\" \"scripts/**/*.mjs\" package.json README.md eslint.config.mjs tsconfig.base.json docs/SPRINT_1_PLAN.md docs/adr/ADR-008-next-16-edge-middleware-opennext-compatibility.md docs/runbooks/sprint-1-local-and-staging.md",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:integration": "supabase test db",
+    "test:e2e": "npm run test:e2e --workspace @virtual-office/web",
+    "build": "npm run build --workspace @virtual-office/shared && npm run build:cloudflare --workspace @virtual-office/web && npm run build --workspace @virtual-office/realtime-worker && npm run build --workspace @virtual-office/sprint-0-spike",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run check:secrets",
+    "deploy:staging": "npm run deploy:staging --workspace @virtual-office/realtime-worker && npm run deploy:staging --workspace @virtual-office/web",
+    "deploy:production": "npm run deploy:production --workspace @virtual-office/realtime-worker && npm run deploy:production --workspace @virtual-office/web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.9.6",
+    "supabase": "^2.114.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

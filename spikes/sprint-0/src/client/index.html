@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sprint 0 · Oficina virtual</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Prueba técnica · Sprint 0</p>
+        <h1>Presencia Durable Object + audio Realtime SFU</h1>
+        <p>Sin Phaser, chat, PWA ni diseño de producto. Cámara y micrófono comienzan sin pistas.</p>
+      </header>
+
+      <form id="join-form">
+        <label>Nombre <input id="display-name" maxlength="40" value="Cliente" required /></label>
+        <label>Sala <input id="room-id" maxlength="48" value="sprint-0" pattern="[A-Za-z0-9_-]+" required /></label>
+        <button id="enter" type="submit">Entrar y preparar sesión SFU</button>
+      </form>
+
+      <section class="controls" aria-label="Controles técnicos">
+        <button id="microphone" type="button" disabled>Activar micrófono</button>
+        <button id="reconnect" type="button" disabled>Forzar reconexión WS</button>
+        <button id="turn-probe" type="button" disabled>Obtener candidato TURN relay</button>
+        <button id="leave" type="button" disabled>Salir y limpiar recursos</button>
+      </section>
+
+      <p id="status" role="status">Fuera del spike; no hay pistas locales ni remotas</p>
+      <p class="hint">Mueve el cuadrado con WASD o flechas. Abre esta URL en dos navegadores con la misma sala.</p>
+      <div id="world" aria-label="Área de sincronización de cuadrados"></div>
+
+      <section class="telemetry">
+        <div>
+          <h2>Diagnóstico</h2>
+          <pre id="diagnostics">{}</pre>
+        </div>
+        <div>
+          <h2>Eventos</h2>
+          <pre id="event-log"></pre>
+        </div>
+      </section>
+      <div id="remote-audio" hidden></div>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+

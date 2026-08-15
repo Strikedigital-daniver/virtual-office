@@ -1,0 +1,23 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "virtual-office-realtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+  },
+  "vars": {
+    "APP_ENV": "development",
+  },
+  "env": {
+    "staging": {
+      "name": "virtual-office-realtime-staging",
+      "vars": {
+        "APP_ENV": "staging",
+      },
+    },
+  },
+}

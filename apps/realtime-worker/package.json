@@ -1,0 +1,22 @@
+{
+  "name": "@virtual-office/realtime-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --env=\"\" --outdir dist",
+    "dev": "wrangler dev",
+    "lint": "eslint src test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy"
+  },
+  "dependencies": {
+    "@virtual-office/shared": "0.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260814.1",
+    "wrangler": "^4.123.0"
+  }
+}

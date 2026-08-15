@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.next/
+.open-next/
+.turbo/
+.dev.vars
+.env
+.env.*
+!.env.example
+apps/web/.env.local
+*.log
+test-results/
+playwright-report/
+.supabase/
+*.tsbuildinfo
