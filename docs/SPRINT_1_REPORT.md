@@ -18,7 +18,7 @@ La fundación de código, Supabase hosted y los dos Workers de staging están im
 - Función transaccional de aceptación que comprueba usuario, correo, caducidad, revocación y capacidad.
 - Manifest PWA standalone, service worker que no cachea páginas autenticadas y pantalla offline sin datos privados.
 - ESLint, Prettier, TypeScript strict, Vitest, pgTAP, escaneo de secretos y CI Linux.
-- Repositorio Git local inicializado en la rama `sprint/1-foundation`; no existe aún remoto privado configurado.
+- Repositorio Git local con commit baseline `72cf516` en la rama `sprint/1-foundation` y rama `main` creada en el mismo punto; no existe aún remoto privado configurado.
 
 ## Evidencia obtenida — 2026-08-14 y 2026-08-15
 
@@ -44,6 +44,13 @@ La fundación de código, Supabase hosted y los dos Workers de staging están im
 - Smoke público: login privado renderizado con Supabase configurado, correo no invitado bloqueado y manifest PWA standalone válido.
 - Enlace mágico abierto por el owner en Chrome: sesión autenticada válida, acceso autorizado a `/admin/members`, navegación directa a `/office/mhcave` y redirección autenticada desde `/` hacia esa oficina.
 - La interfaz autenticada identifica a `Administrador mhcave` y mantiene el límite de Sprint 1: no incluye mapa, movimiento ni controles de cámara o micrófono.
+
+## Evidencia adicional — 2026-08-15 (revisión de continuidad)
+
+- `npm run verify` reaprobado completo: lint, typecheck, 16 pruebas Vitest en 4 workspaces, build OpenNext (14 rutas), dry-run de ambos Workers y escaneo de secretos sobre 108 archivos fuente más 39 generados.
+- Staging web respondió con la pantalla `Acceso privado`; el health check del Worker de tiempo real devolvió `ok: true, sprint: 1, environment: staging`; el spike de Sprint 0 sigue publicado y operativo.
+- El árbol de trabajo completo quedó versionado por primera vez: commit baseline `72cf516` en `sprint/1-foundation` (108 archivos, sin secretos según el escaneo previo) y rama `main` creada en el mismo punto para el flujo de PRs.
+- Se agregó `.gitattributes` con normalización LF y `*.tsbuildinfo` al `.gitignore`.
 
 ## Evidencia pendiente
 
