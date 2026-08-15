@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
+import { AccessLinkCreateForm } from "@/components/access-link-create-form";
+import { AccessLinkRevokeButton } from "@/components/access-link-revoke-button";
 import { InvitationCreateForm } from "@/components/invitation-create-form";
 import { createClient } from "@/lib/supabase/server";
 
@@ -44,12 +46,53 @@ export default async function MembersAdminPage() {
     .eq("office_id", membership.office_id)
     .order("created_at", { ascending: false })
     .limit(20);
+  const { data: accessLinks } = await supabase
+    .from("office_access_links")
+    .select("id, member_label, role, user_id, revoked_at, last_used_at")
+    .eq("office_id", membership.office_id)
+    .order("created_at", { ascending: false })
+    .limit(20);
 
   return (
     <section className="admin-grid">
       <div className="panel">
         <p className="eyebrow">{office?.name ?? "Oficina"}</p>
-        <h1>Invitar una persona</h1>
+        <h1>Enlace personal</h1>
+        <p>
+          Crea un enlace por persona y envíaselo por un canal directo. Quien lo
+          abra entra con su nombre, sin correos.
+        </p>
+        <AccessLinkCreateForm officeId={membership.office_id} />
+      </div>
+      <div className="panel">
+        <h2>Enlaces creados</h2>
+        {accessLinks?.length ? (
+          <ul className="invitation-list">
+            {accessLinks.map((link) => (
+              <li key={link.id}>
+                <span>{link.member_label}</span>
+                <small>
+                  {link.revoked_at
+                    ? "Revocado"
+                    : link.last_used_at
+                      ? `En uso · ${link.role}`
+                      : `Sin usar · ${link.role}`}
+                </small>
+                {link.revoked_at ? null : (
+                  <AccessLinkRevokeButton
+                    officeId={membership.office_id}
+                    linkId={link.id}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>No hay enlaces todavía.</p>
+        )}
+      </div>
+      <div className="panel">
+        <h1>Invitar por correo</h1>
         <InvitationCreateForm officeId={membership.office_id} />
       </div>
       <div className="panel">

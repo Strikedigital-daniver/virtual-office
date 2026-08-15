@@ -31,6 +31,26 @@ export const InvitationAcceptInputSchema = z.object({
 });
 export type InvitationAcceptInput = z.infer<typeof InvitationAcceptInputSchema>;
 
+export const AccessLinkCreateInputSchema = z.object({
+  officeId: z.string().uuid(),
+  memberLabel: z.string().trim().min(1).max(40),
+  email: z.string().trim().toLowerCase().email().max(254).optional(),
+  role: InvitationRoleSchema,
+});
+export type AccessLinkCreateInput = z.infer<typeof AccessLinkCreateInputSchema>;
+
+export const AccessLinkRedeemInputSchema = z.object({
+  token: InviteTokenSchema,
+  displayName: z.string().trim().min(1).max(40),
+});
+export type AccessLinkRedeemInput = z.infer<typeof AccessLinkRedeemInputSchema>;
+
+export const AccessLinkRevokeInputSchema = z.object({
+  officeId: z.string().uuid(),
+  linkId: z.string().uuid(),
+});
+export type AccessLinkRevokeInput = z.infer<typeof AccessLinkRevokeInputSchema>;
+
 export const AppEnvironmentSchema = z.enum([
   "development",
   "staging",
