@@ -51,6 +51,19 @@ export const AccessLinkRevokeInputSchema = z.object({
 });
 export type AccessLinkRevokeInput = z.infer<typeof AccessLinkRevokeInputSchema>;
 
+export const UsernameSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9]{2,20}$/u, "Username must be 2-20 letters or digits");
+
+export const UserCreateInputSchema = z.object({
+  officeId: z.string().uuid(),
+  username: UsernameSchema,
+  password: z.string().min(8).max(72),
+  role: InvitationRoleSchema.default("member"),
+});
+export type UserCreateInput = z.infer<typeof UserCreateInputSchema>;
+
 export const AppEnvironmentSchema = z.enum([
   "development",
   "staging",

@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { AccessLinkCreateForm } from "@/components/access-link-create-form";
-import { AccessLinkRevokeButton } from "@/components/access-link-revoke-button";
-import { InvitationCreateForm } from "@/components/invitation-create-form";
+import { UserCreateForm } from "@/components/user-create-form";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Miembros" };
@@ -29,7 +27,7 @@ export default async function MembersAdminPage() {
     return (
       <section className="panel narrow">
         <h1>Acceso restringido</h1>
-        <p>Solo owner y administradores pueden crear invitaciones.</p>
+        <p>Solo owner y administradores pueden crear usuarios.</p>
         <a href="/">Volver a la oficina</a>
       </section>
     );
@@ -40,80 +38,48 @@ export default async function MembersAdminPage() {
     .select("name")
     .eq("id", membership.office_id)
     .single();
-  const { data: invitations } = await supabase
-    .from("office_invitations")
-    .select("id, email, role, expires_at, accepted_at, revoked_at")
+  const { data: members } = await supabase
+    .from("office_members")
+    .select("user_id, role, active")
     .eq("office_id", membership.office_id)
-    .order("created_at", { ascending: false })
-    .limit(20);
-  const { data: accessLinks } = await supabase
-    .from("office_access_links")
-    .select("id, member_label, role, user_id, revoked_at, last_used_at")
-    .eq("office_id", membership.office_id)
-    .order("created_at", { ascending: false })
-    .limit(20);
+    .order("joined_at", { ascending: true });
+  const memberIds = (members ?? []).map((member) => member.user_id);
+  const { data: profiles } = memberIds.length
+    ? await supabase
+        .from("profiles")
+        .select("id, display_name")
+        .in("id", memberIds)
+    : { data: [] };
+  const nameById = new Map(
+    (profiles ?? []).map((profile) => [profile.id, profile.display_name]),
+  );
 
   return (
     <section className="admin-grid">
       <div className="panel">
         <p className="eyebrow">{office?.name ?? "Oficina"}</p>
-        <h1>Enlace personal</h1>
+        <h1>Crear usuario</h1>
         <p>
-          Crea un enlace por persona y envíaselo por un canal directo. Quien lo
-          abra entra con su nombre, sin correos.
+          Define su nombre de usuario y contraseña, y comunícaselos tú
+          directamente. Con eso ya puede entrar.
         </p>
-        <AccessLinkCreateForm officeId={membership.office_id} />
+        <UserCreateForm officeId={membership.office_id} />
       </div>
       <div className="panel">
-        <h2>Enlaces creados</h2>
-        {accessLinks?.length ? (
+        <h2>Miembros</h2>
+        {members?.length ? (
           <ul className="invitation-list">
-            {accessLinks.map((link) => (
-              <li key={link.id}>
-                <span>{link.member_label}</span>
+            {members.map((member) => (
+              <li key={member.user_id}>
+                <span>{nameById.get(member.user_id) ?? "Sin perfil"}</span>
                 <small>
-                  {link.revoked_at
-                    ? "Revocado"
-                    : link.last_used_at
-                      ? `En uso · ${link.role}`
-                      : `Sin usar · ${link.role}`}
-                </small>
-                {link.revoked_at ? null : (
-                  <AccessLinkRevokeButton
-                    officeId={membership.office_id}
-                    linkId={link.id}
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>No hay enlaces todavía.</p>
-        )}
-      </div>
-      <div className="panel">
-        <h1>Invitar por correo</h1>
-        <InvitationCreateForm officeId={membership.office_id} />
-      </div>
-      <div className="panel">
-        <h2>Invitaciones recientes</h2>
-        {invitations?.length ? (
-          <ul className="invitation-list">
-            {invitations.map((invitation) => (
-              <li key={invitation.id}>
-                <span>{invitation.email}</span>
-                <small>
-                  {invitation.accepted_at
-                    ? "Aceptada"
-                    : invitation.revoked_at
-                      ? "Revocada"
-                      : `Pendiente · ${invitation.role}`}
+                  {member.active ? member.role : `${member.role} · inactivo`}
                 </small>
               </li>
             ))}
           </ul>
         ) : (
-          <p>No hay invitaciones todavía.</p>
+          <p>No hay miembros todavía.</p>
         )}
       </div>
     </section>
