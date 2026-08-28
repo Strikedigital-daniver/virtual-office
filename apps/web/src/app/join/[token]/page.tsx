@@ -36,15 +36,25 @@ export default async function JoinPage({ params }: JoinPageProps) {
 
   const admin = createAdminClient();
   const tokenHash = await sha256Hex(parsedToken.data);
-  const { data: link } = await admin
+  const { data: link, error: linkError } = await admin
     .from("office_access_links")
-    .select("member_label, user_id, office_id, offices(name, slug)")
+    .select("member_label, user_id, office_id")
     .eq("token_hash", tokenHash)
     .is("revoked_at", null)
     .maybeSingle();
+  if (linkError) {
+    console.error("Access link lookup failed", {
+      code: linkError.code,
+      message: linkError.message,
+    });
+  }
   if (!link) return <InvalidLinkPanel />;
 
-  const office = Array.isArray(link.offices) ? link.offices[0] : link.offices;
+  const { data: office } = await admin
+    .from("offices")
+    .select("name, slug")
+    .eq("id", link.office_id)
+    .maybeSingle();
 
   const supabase = await createClient();
   const {

@@ -20,7 +20,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   return (
     <section className="panel narrow">
       <p className="eyebrow">Acceso privado</p>
-      <h1>Entra con tu correo invitado.</h1>
+      <h1>Entra con tu usuario.</h1>
       <p>No existe registro público. Cámara y micrófono permanecen apagados.</p>
       {configured ? (
         <LoginForm nextPath={nextPath} />
