@@ -29,6 +29,13 @@ using (
 revoke all on public.office_access_links from anon, authenticated;
 grant select on public.office_access_links to authenticated;
 
+-- The server-only Supabase client uses the service_role database role.
+-- RLS bypass does not replace ordinary table privileges, so grant only the
+-- operations the link workflows need: lookup, creation and revocation.
+grant select, insert, update
+on table public.office_access_links
+to service_role;
+
 create function public.redeem_office_access_link(
   link_id uuid,
   target_user_id uuid,
