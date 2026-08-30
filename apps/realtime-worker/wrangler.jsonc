@@ -9,14 +9,38 @@
   "observability": {
     "enabled": true,
   },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OfficeRoom"],
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "OFFICE_ROOM",
+        "class_name": "OfficeRoom",
+      },
+    ],
+  },
   "vars": {
     "APP_ENV": "development",
+    "ALLOWED_ORIGIN": "http://localhost:3000",
   },
   "env": {
     "staging": {
       "name": "virtual-office-realtime-staging",
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "OFFICE_ROOM",
+            "class_name": "OfficeRoom",
+          },
+        ],
+      },
       "vars": {
         "APP_ENV": "staging",
+        "ALLOWED_ORIGIN": "https://virtual-office-staging.mhcave.workers.dev",
       },
     },
   },

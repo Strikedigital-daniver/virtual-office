@@ -8,7 +8,7 @@
     "dev": "wrangler dev",
     "lint": "eslint src test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --max-workers=1 --no-isolate",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy"
   },
@@ -16,6 +16,7 @@
     "@virtual-office/shared": "0.1.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.21.3",
     "@cloudflare/workers-types": "^5.20260814.1",
     "wrangler": "^4.123.0"
   }

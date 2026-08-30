@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 
+import { OfficeWorld } from "@/components/office-world";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Oficina" };
@@ -31,37 +32,37 @@ export default async function OfficePage({ params }: OfficePageProps) {
     .select("display_name")
     .eq("id", user.id)
     .maybeSingle();
+  const { data: membership } = await supabase
+    .from("office_members")
+    .select("role")
+    .eq("office_id", office.id)
+    .eq("user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+  const canAdminister =
+    membership?.role === "owner" || membership?.role === "admin";
 
   return (
-    <section className="office-shell">
-      <div className="office-copy">
-        <p className="eyebrow">Acceso autorizado</p>
-        <h1>{office.name}</h1>
-        <p>
-          Hola, {profile?.display_name ?? user.email ?? "miembro"}. La sesión,
-          membresía y shell PWA están activos.
-        </p>
-      </div>
-      <div className="foundation-card" aria-label="Límite actual del Sprint 1">
-        <span className="status-dot" aria-hidden="true" />
+    <section className="office-stage">
+      <header className="office-bar">
         <div>
-          <strong>Fundación conectada</strong>
-          <p>
-            El mapa y los dispositivos se incorporarán en sus sprints
-            autorizados.
-          </p>
+          <p className="eyebrow">{office.name}</p>
+          <strong>{profile?.display_name ?? "Integrante"}</strong>
         </div>
-      </div>
-      <nav className="office-actions" aria-label="Acciones de cuenta">
-        <a className="button-link secondary" href="/admin/members">
-          Administrar miembros
-        </a>
-        <form action="/auth/signout" method="post">
-          <button className="secondary" type="submit">
-            Salir
-          </button>
-        </form>
-      </nav>
+        <nav className="office-actions" aria-label="Acciones de cuenta">
+          {canAdminister ? (
+            <a className="button-link secondary" href="/admin/members">
+              Usuarios
+            </a>
+          ) : null}
+          <form action="/auth/signout" method="post">
+            <button className="secondary" type="submit">
+              Salir
+            </button>
+          </form>
+        </nav>
+      </header>
+      <OfficeWorld officeSlug={office.slug} />
     </section>
   );
 }
