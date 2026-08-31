@@ -3,6 +3,7 @@ import { z } from "zod";
 export * from "./protocol";
 export * from "./office-map";
 export * from "./realtime-ticket";
+export * from "./realtime-sfu";
 
 export const OfficeRoleSchema = z.enum([
   "owner",

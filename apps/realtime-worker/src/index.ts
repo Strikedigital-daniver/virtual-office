@@ -4,7 +4,7 @@ import { OfficeRoom } from "./office-room";
 export { OfficeRoom };
 export type { Env };
 
-const OFFICE_PATH = /^\/office\/([0-9a-f-]{36})\/connect$/u;
+const OFFICE_PATH = /^\/office\/([0-9a-f-]{36})\/(connect|media\/.+)$/u;
 
 function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -18,6 +18,13 @@ function withSecurityHeaders(response: Response): Response {
   return new Response(response.body, { status: response.status, headers });
 }
 
+function withCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", origin);
+  headers.set("Vary", "Origin");
+  return new Response(response.body, { status: response.status, headers });
+}
+
 export async function handleRequest(
   request: Request,
   env: Env,
@@ -28,9 +35,9 @@ export async function handleRequest(
       Response.json({
         ok: true,
         service: "realtime-worker",
-        sprint: 2,
+        sprint: 3,
         environment: env.APP_ENV,
-        capabilities: ["presence"],
+        capabilities: ["presence", "media"],
       }),
     );
   }
@@ -38,14 +45,31 @@ export async function handleRequest(
   const match = OFFICE_PATH.exec(url.pathname);
   if (match) {
     const origin = request.headers.get("Origin");
-    if (env.ALLOWED_ORIGIN && origin && origin !== env.ALLOWED_ORIGIN) {
+    const allowed = env.ALLOWED_ORIGIN;
+    if (allowed && origin && origin !== allowed) {
       return withSecurityHeaders(
         Response.json({ error: "ORIGIN_NOT_ALLOWED" }, { status: 403 }),
       );
     }
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": allowed ?? origin ?? "*",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Authorization, Content-Type",
+          "Access-Control-Max-Age": "600",
+          Vary: "Origin",
+        },
+      });
+    }
+
     const officeId = match[1]!;
     const stub = env.OFFICE_ROOM.get(env.OFFICE_ROOM.idFromName(officeId));
-    return stub.fetch(request);
+    const response = await stub.fetch(request);
+    if (response.status === 101) return response;
+    return withCors(response, allowed ?? origin ?? "*");
   }
 
   return withSecurityHeaders(

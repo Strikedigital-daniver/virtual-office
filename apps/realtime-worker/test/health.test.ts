@@ -13,7 +13,7 @@ const worker = (
 const bindings = env as unknown as Env;
 
 describe("realtime worker surface", () => {
-  it("reports the Sprint 2 presence capability", async () => {
+  it("reports the Sprint 3 presence and media capabilities", async () => {
     const response = await worker.fetch("https://office.test/health");
 
     expect(response.status).toBe(200);
@@ -21,9 +21,9 @@ describe("realtime worker surface", () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       service: "realtime-worker",
-      sprint: 2,
+      sprint: 3,
       environment: bindings.APP_ENV,
-      capabilities: ["presence"],
+      capabilities: ["presence", "media"],
     });
   });
 

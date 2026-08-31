@@ -2,8 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
   ClientEventSchema,
+  CloseTracksRequestSchema,
   MAX_SPEED_PX_PER_S,
   OFFICE_MAP,
+  PublishTracksRequestSchema,
+  RealtimeResponseSchema,
+  RenegotiateRequestSchema,
+  SubscribeTracksRequestSchema,
   TILE_SIZE,
   isBlockedAtPixel,
   mapPixelSize,
@@ -12,6 +17,8 @@ import {
   verifyRealtimeTicket,
   zoneAtPixel,
   type PlayerState,
+  type PublishedTrack,
+  type RealtimeTicketClaims,
   type ServerEvent,
 } from "@virtual-office/shared";
 
@@ -23,9 +30,35 @@ interface ConnectionAttachment extends PlayerState {
   lastMoveAt: number;
 }
 
+interface MediaSessionRecord {
+  userId: string;
+  sessionId: string;
+  createdAt: number;
+}
+
+interface StoredTrack extends PublishedTrack {
+  storageVersion: 1;
+}
+
 const OFFICE_PATH = /^\/office\/([0-9a-f-]{36})\/connect$/u;
+const MEDIA_PATH = /^\/office\/([0-9a-f-]{36})\/media\/(.+)$/u;
+const SESSION_PREFIX = "media-session:";
+const TRACK_PREFIX = "published-track:";
+const MID_PREFIX = "published-mid:";
 const BOUNDS_MARGIN = TILE_SIZE / 2;
 const SPEED_TOLERANCE_PX = 16;
+
+function sessionKey(sessionId: string): string {
+  return `${SESSION_PREFIX}${sessionId}`;
+}
+
+function trackKey(sessionId: string, trackName: string): string {
+  return `${TRACK_PREFIX}${sessionId}:${trackName}`;
+}
+
+function midKey(sessionId: string, mid: string): string {
+  return `${MID_PREFIX}${sessionId}:${mid}`;
+}
 
 function attachmentOf(webSocket: WebSocket): ConnectionAttachment | null {
   const value = webSocket.deserializeAttachment() as unknown;
@@ -68,6 +101,10 @@ function errorResponse(
 export class OfficeRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const mediaMatch = MEDIA_PATH.exec(url.pathname);
+    if (mediaMatch)
+      return this.handleMedia(request, mediaMatch[1]!, mediaMatch[2]!);
+
     const match = OFFICE_PATH.exec(url.pathname);
     if (!match) {
       return errorResponse(404, "NOT_FOUND", "Unknown Durable Object route.");
@@ -158,6 +195,7 @@ export class OfficeRoom extends DurableObject<Env> {
       type: "office.snapshot",
       selfUserId: claims.userId,
       players,
+      publishedTracks: await this.listPublishedTracks(),
       serverTime: now,
     });
     this.broadcast(
@@ -300,6 +338,7 @@ export class OfficeRoom extends DurableObject<Env> {
       return;
     }
     this.broadcast({ type: "player.left", userId: attachment.userId });
+    await this.cleanupUserMedia(attachment.userId);
   }
 
   async webSocketError(webSocket: WebSocket): Promise<void> {
@@ -311,6 +350,363 @@ export class OfficeRoom extends DurableObject<Env> {
       return;
     }
     this.broadcast({ type: "player.left", userId: attachment.userId });
+    await this.cleanupUserMedia(attachment.userId);
+  }
+
+  private async handleMedia(
+    request: Request,
+    officeId: string,
+    action: string,
+  ): Promise<Response> {
+    if (request.method !== "POST") {
+      return errorResponse(405, "METHOD_NOT_ALLOWED", "Use POST.");
+    }
+    if (!this.env.TICKET_SIGNING_SECRET) {
+      return errorResponse(
+        503,
+        "TICKETS_NOT_CONFIGURED",
+        "The ticket signing secret is not configured.",
+      );
+    }
+
+    const token =
+      request.headers.get("Authorization")?.replace(/^Bearer\s+/iu, "") ?? "";
+    let claims: RealtimeTicketClaims;
+    try {
+      claims = await verifyRealtimeTicket(
+        token,
+        this.env.TICKET_SIGNING_SECRET,
+      );
+    } catch {
+      return errorResponse(401, "TICKET_INVALID", "Invalid media ticket.");
+    }
+    if (claims.officeId !== officeId) {
+      return errorResponse(
+        403,
+        "TICKET_OFFICE_MISMATCH",
+        "The ticket does not belong to this office.",
+      );
+    }
+
+    let body: unknown = null;
+    if (action !== "session") {
+      try {
+        body = (await request.json()) as unknown;
+      } catch {
+        return errorResponse(400, "INVALID_JSON", "Expected a JSON body.");
+      }
+    }
+
+    try {
+      switch (action) {
+        case "session":
+          return await this.createMediaSession(claims.userId);
+        case "tracks/publish":
+          return await this.publishTracks(claims.userId, body);
+        case "tracks/subscribe":
+          return await this.subscribeTracks(claims.userId, body);
+        case "renegotiate":
+          return await this.renegotiate(claims.userId, body);
+        case "tracks/close":
+          return await this.closeTracks(claims.userId, body);
+        default:
+          return errorResponse(404, "NOT_FOUND", "Unknown media action.");
+      }
+    } catch {
+      return errorResponse(
+        400,
+        "INVALID_REQUEST",
+        "The media request is not valid.",
+      );
+    }
+  }
+
+  private async createMediaSession(userId: string): Promise<Response> {
+    const result = await this.callRealtime("/sessions/new", "POST");
+    if (!result.response.ok) return result.response;
+    const parsed = RealtimeResponseSchema.safeParse(result.json);
+    const sessionId = parsed.success ? parsed.data.sessionId : undefined;
+    if (!sessionId) {
+      return errorResponse(
+        502,
+        "REALTIME_BAD_RESPONSE",
+        "Realtime omitted sessionId.",
+      );
+    }
+    const record: MediaSessionRecord = {
+      userId,
+      sessionId,
+      createdAt: Date.now(),
+    };
+    await this.ctx.storage.put(sessionKey(sessionId), record);
+    return result.response;
+  }
+
+  private async publishTracks(
+    userId: string,
+    body: unknown,
+  ): Promise<Response> {
+    const input = PublishTracksRequestSchema.parse(body);
+    if (!(await this.ownsSession(userId, input.sessionId))) {
+      return errorResponse(
+        403,
+        "SESSION_NOT_OWNED",
+        "The media session is not yours.",
+      );
+    }
+    const { sessionId, ...apiBody } = input;
+    const result = await this.callRealtime(
+      `/sessions/${encodeURIComponent(sessionId)}/tracks/new`,
+      "POST",
+      apiBody,
+    );
+    if (!result.response.ok) return result.response;
+    const parsed = RealtimeResponseSchema.safeParse(result.json);
+    if (!parsed.success || parsed.data.errorCode) return result.response;
+
+    for (const requested of input.tracks) {
+      const returned = parsed.data.tracks?.find(
+        (track) => track.trackName === requested.trackName,
+      );
+      const stored: StoredTrack = {
+        storageVersion: 1,
+        ownerUserId: userId,
+        sessionId,
+        trackName: requested.trackName,
+        mid: returned?.mid ?? requested.mid,
+        kind: requested.kind,
+      };
+      await this.ctx.storage.put({
+        [trackKey(sessionId, requested.trackName)]: stored,
+        [midKey(sessionId, stored.mid)]: stored,
+      });
+      this.broadcast({
+        type: "media.track.available",
+        track: {
+          ownerUserId: stored.ownerUserId,
+          sessionId: stored.sessionId,
+          trackName: stored.trackName,
+          mid: stored.mid,
+          kind: stored.kind,
+        },
+      });
+    }
+    return result.response;
+  }
+
+  private async subscribeTracks(
+    userId: string,
+    body: unknown,
+  ): Promise<Response> {
+    const input = SubscribeTracksRequestSchema.parse(body);
+    if (!(await this.ownsSession(userId, input.sessionId))) {
+      return errorResponse(
+        403,
+        "SESSION_NOT_OWNED",
+        "The media session is not yours.",
+      );
+    }
+    for (const track of input.tracks) {
+      const stored = await this.ctx.storage.get<StoredTrack>(
+        trackKey(track.sessionId, track.trackName),
+      );
+      if (!stored) {
+        return errorResponse(
+          403,
+          "TRACK_NOT_AUTHORIZED",
+          "The requested track is not registered in this office.",
+        );
+      }
+      if (stored.ownerUserId === userId) {
+        return errorResponse(
+          403,
+          "TRACK_NOT_AUTHORIZED",
+          "A publisher cannot subscribe to its own track.",
+        );
+      }
+    }
+
+    const { sessionId, ...apiBody } = input;
+    return (
+      await this.callRealtime(
+        `/sessions/${encodeURIComponent(sessionId)}/tracks/new`,
+        "POST",
+        apiBody,
+      )
+    ).response;
+  }
+
+  private async renegotiate(userId: string, body: unknown): Promise<Response> {
+    const input = RenegotiateRequestSchema.parse(body);
+    if (!(await this.ownsSession(userId, input.sessionId))) {
+      return errorResponse(
+        403,
+        "SESSION_NOT_OWNED",
+        "The media session is not yours.",
+      );
+    }
+    const { sessionId, ...apiBody } = input;
+    return (
+      await this.callRealtime(
+        `/sessions/${encodeURIComponent(sessionId)}/renegotiate`,
+        "PUT",
+        apiBody,
+      )
+    ).response;
+  }
+
+  private async closeTracks(userId: string, body: unknown): Promise<Response> {
+    const input = CloseTracksRequestSchema.parse(body);
+    if (!(await this.ownsSession(userId, input.sessionId))) {
+      return errorResponse(
+        403,
+        "SESSION_NOT_OWNED",
+        "The media session is not yours.",
+      );
+    }
+
+    const owned: StoredTrack[] = [];
+    for (const track of input.tracks) {
+      const stored = await this.ctx.storage.get<StoredTrack>(
+        midKey(input.sessionId, track.mid),
+      );
+      if (stored && stored.ownerUserId !== userId) {
+        return errorResponse(
+          403,
+          "TRACK_NOT_OWNED",
+          "That track belongs to someone else.",
+        );
+      }
+      if (stored) owned.push(stored);
+    }
+
+    const { sessionId, ...apiBody } = input;
+    const result = await this.callRealtime(
+      `/sessions/${encodeURIComponent(sessionId)}/tracks/close`,
+      "PUT",
+      apiBody,
+    );
+    if (!result.response.ok) return result.response;
+    const parsed = RealtimeResponseSchema.safeParse(result.json);
+    if (!parsed.success || parsed.data.errorCode) return result.response;
+
+    for (const stored of owned) await this.deleteTrack(stored);
+    return result.response;
+  }
+
+  private async ownsSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const record = await this.ctx.storage.get<MediaSessionRecord>(
+      sessionKey(sessionId),
+    );
+    return record?.userId === userId;
+  }
+
+  private async listPublishedTracks(): Promise<PublishedTrack[]> {
+    const stored = await this.ctx.storage.list<StoredTrack>({
+      prefix: TRACK_PREFIX,
+    });
+    return [...stored.values()].map((track) => ({
+      ownerUserId: track.ownerUserId,
+      sessionId: track.sessionId,
+      trackName: track.trackName,
+      mid: track.mid,
+      kind: track.kind,
+    }));
+  }
+
+  private async deleteTrack(stored: StoredTrack): Promise<void> {
+    await this.ctx.storage.delete([
+      trackKey(stored.sessionId, stored.trackName),
+      midKey(stored.sessionId, stored.mid),
+    ]);
+    this.broadcast({
+      type: "media.track.revoked",
+      ownerUserId: stored.ownerUserId,
+      sessionId: stored.sessionId,
+      trackName: stored.trackName,
+    });
+  }
+
+  private async cleanupUserMedia(userId: string): Promise<void> {
+    const sessions = await this.ctx.storage.list<MediaSessionRecord>({
+      prefix: SESSION_PREFIX,
+    });
+    const tracks = await this.ctx.storage.list<StoredTrack>({
+      prefix: TRACK_PREFIX,
+    });
+    for (const track of [...tracks.values()].filter(
+      (candidate) => candidate.ownerUserId === userId,
+    )) {
+      try {
+        await this.callRealtime(
+          `/sessions/${encodeURIComponent(track.sessionId)}/tracks/close`,
+          "PUT",
+          { tracks: [{ mid: track.mid }], force: true },
+        );
+      } catch {
+        // Realtime garbage collects inactive tracks; the registry must be cleaned regardless.
+      }
+      await this.deleteTrack(track);
+    }
+
+    const ownedSessionKeys = [...sessions.entries()]
+      .filter(([, record]) => record.userId === userId)
+      .map(([key]) => key);
+    if (ownedSessionKeys.length > 0) {
+      await this.ctx.storage.delete(ownedSessionKeys);
+    }
+  }
+
+  private async callRealtime(
+    path: string,
+    method: "POST" | "PUT",
+    body?: unknown,
+  ): Promise<{ response: Response; json: unknown }> {
+    const appId = this.env.CLOUDFLARE_REALTIME_APP_ID;
+    const appSecret = this.env.CLOUDFLARE_REALTIME_APP_SECRET;
+    if (!appId || !appSecret) {
+      return {
+        response: errorResponse(
+          503,
+          "REALTIME_NOT_CONFIGURED",
+          "Cloudflare Realtime credentials are not configured on the Worker.",
+        ),
+        json: null,
+      };
+    }
+
+    const upstream = await fetch(
+      `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(appId)}${path}`,
+      {
+        method,
+        headers: {
+          Authorization: `Bearer ${appSecret}`,
+          "Content-Type": "application/json",
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+    );
+    const text = await upstream.text();
+    let json: unknown = null;
+    try {
+      json = text.length === 0 ? null : (JSON.parse(text) as unknown);
+    } catch {
+      json = null;
+    }
+    return {
+      response: new Response(text, {
+        status: upstream.status,
+        headers: {
+          "Content-Type":
+            upstream.headers.get("Content-Type") ?? "application/json",
+          "Cache-Control": "no-store",
+        },
+      }),
+      json,
+    };
   }
 
   private connectedPlayers(excludeUserId?: string): PlayerState[] {

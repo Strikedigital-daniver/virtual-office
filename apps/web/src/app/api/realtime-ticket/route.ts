@@ -81,12 +81,13 @@ export async function POST(request: NextRequest) {
     signingSecret,
   );
 
-  const wsBase = environment.realtimeWebSocketUrl
-    .replace(/^http/u, "ws")
-    .replace(/\/$/u, "");
+  const httpBase = environment.realtimeWebSocketUrl.replace(/\/$/u, "");
+  const wsBase = httpBase.replace(/^http/u, "ws");
   const response = NextResponse.json({
     ticket,
     url: `${wsBase}/office/${office.id}/connect`,
+    mediaBaseUrl: `${httpBase}/office/${office.id}/media`,
+    userId: user.id,
   });
   response.headers.set("Cache-Control", "private, no-store");
   return response;

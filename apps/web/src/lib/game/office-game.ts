@@ -9,6 +9,7 @@ import {
   mapPixelSize,
   type Direction,
   type PlayerState,
+  type PublishedTrack,
   type ServerEvent,
 } from "@virtual-office/shared";
 import type PhaserNamespace from "phaser";
@@ -19,6 +20,8 @@ export interface OfficeGameOptions {
   container: HTMLElement;
   officeSlug: string;
   onStatus: (status: string) => void;
+  onTracks?: (tracks: PublishedTrack[]) => void;
+  onPlayers?: (players: { userId: string; displayName: string }[]) => void;
 }
 
 export interface OfficeGameHandle {
@@ -64,6 +67,42 @@ export async function createOfficeGame(
   > | null = null;
   let lastSent = { x: 0, y: 0, moving: false };
   let direction: Direction = "down";
+  const tracks = new Map<string, PublishedTrack>();
+
+  function trackKeyOf(ref: { sessionId: string; trackName: string }): string {
+    return `${ref.sessionId}:${ref.trackName}`;
+  }
+
+  function publishTracks(): void {
+    options.onTracks?.([...tracks.values()]);
+    refreshLabels();
+  }
+
+  function publishPlayers(): void {
+    options.onPlayers?.(
+      [...remotes.values()].map((remote) => ({
+        userId: remote.state.userId,
+        displayName: remote.state.displayName,
+      })),
+    );
+  }
+
+  function indicatorsFor(userId: string): string {
+    const owned = [...tracks.values()].filter(
+      (track) => track.ownerUserId === userId,
+    );
+    const audio = owned.some((track) => track.kind === "audio") ? " 🎤" : "";
+    const video = owned.some((track) => track.kind === "video") ? " 🎥" : "";
+    return `${audio}${video}`;
+  }
+
+  function refreshLabels(): void {
+    for (const remote of remotes.values()) {
+      remote.label.setText(
+        `${remote.state.displayName}${indicatorsFor(remote.state.userId)}`,
+      );
+    }
+  }
 
   function addRemote(scene: PhaserNamespace.Scene, state: PlayerState): void {
     if (state.userId === selfUserId) return;
@@ -117,11 +156,27 @@ export async function createOfficeGame(
             addRemote(scene, player);
           }
         }
+        tracks.clear();
+        for (const track of event.publishedTracks) {
+          tracks.set(trackKeyOf(track), track);
+        }
         options.onStatus("Conectado");
+        publishTracks();
+        publishPlayers();
         break;
       }
+      case "media.track.available":
+        tracks.set(trackKeyOf(event.track), event.track);
+        publishTracks();
+        break;
+      case "media.track.revoked":
+        tracks.delete(trackKeyOf(event));
+        publishTracks();
+        break;
       case "player.joined":
         addRemote(scene, event.player);
+        publishPlayers();
+        refreshLabels();
         break;
       case "player.updated": {
         if (event.player.userId === selfUserId) break;
@@ -139,6 +194,7 @@ export async function createOfficeGame(
       }
       case "player.left":
         removeRemote(event.userId);
+        publishPlayers();
         break;
       case "player.corrected":
         selfBody?.setPosition(event.x, event.y);
