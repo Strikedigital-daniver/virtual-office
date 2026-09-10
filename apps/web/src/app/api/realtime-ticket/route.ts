@@ -1,4 +1,5 @@
 import {
+  TEMPLE_WORLD_SLUG,
   TicketRequestSchema,
   issueRealtimeTicket,
 } from "@virtual-office/shared";
@@ -6,6 +7,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getPublicEnvironment } from "@/lib/env";
 import { isSameOrigin } from "@/lib/security";
+import { clubSpatialEntitlementProvider } from "@/lib/spatial";
 import { createClient } from "@/lib/supabase/server";
 
 export async function POST(request: NextRequest) {
@@ -34,6 +36,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (input.data.officeSlug !== TEMPLE_WORLD_SLUG) {
+    return NextResponse.json(
+      { error: "Mundo no disponible." },
+      { status: 403 },
+    );
+  }
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -41,42 +50,23 @@ export async function POST(request: NextRequest) {
   if (!user)
     return NextResponse.json({ error: "Sesión requerida." }, { status: 401 });
 
-  const { data: office } = await supabase
-    .from("offices")
-    .select("id")
-    .eq("slug", input.data.officeSlug)
-    .maybeSingle();
-  if (!office) {
+  const entitlements =
+    await clubSpatialEntitlementProvider.getSpatialEntitlements(supabase);
+  if (!entitlements) {
     return NextResponse.json(
-      { error: "No perteneces a esta oficina." },
-      { status: 403 },
-    );
-  }
-  const { data: membership } = await supabase
-    .from("office_members")
-    .select("role")
-    .eq("office_id", office.id)
-    .eq("user_id", user.id)
-    .eq("active", true)
-    .maybeSingle();
-  if (!membership) {
-    return NextResponse.json(
-      { error: "No perteneces a esta oficina." },
+      { error: "Se requiere membresía activa del Recuerda Club." },
       { status: 403 },
     );
   }
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("display_name")
-    .eq("id", user.id)
-    .maybeSingle();
-
+  // Protocol compatibility debt: ticket claim field is officeId; value is world UUID.
+  const worldId = entitlements.templeWorldId;
   const ticket = await issueRealtimeTicket(
     {
-      userId: user.id,
-      officeId: office.id,
-      displayName: profile?.display_name ?? "Integrante",
+      userId: entitlements.authUserId,
+      officeId: worldId,
+      displayName: entitlements.displayName,
+      accessClass: entitlements.accessClass,
     },
     signingSecret,
   );
@@ -85,9 +75,10 @@ export async function POST(request: NextRequest) {
   const wsBase = httpBase.replace(/^http/u, "ws");
   const response = NextResponse.json({
     ticket,
-    url: `${wsBase}/office/${office.id}/connect`,
-    mediaBaseUrl: `${httpBase}/office/${office.id}/media`,
-    userId: user.id,
+    url: `${wsBase}/office/${worldId}/connect`,
+    mediaBaseUrl: `${httpBase}/office/${worldId}/media`,
+    userId: entitlements.authUserId,
+    accessClass: entitlements.accessClass,
   });
   response.headers.set("Cache-Control", "private, no-store");
   return response;

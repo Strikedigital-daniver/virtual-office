@@ -18,6 +18,7 @@
     "test": "npm run test --workspaces --if-present",
     "test:integration": "supabase test db",
     "test:e2e": "npm run test:e2e --workspace @virtual-office/web",
+    "test:media-e2e": "npm run test:media-e2e --workspace @virtual-office/web",
     "build": "npm run build --workspace @virtual-office/shared && npm run build:cloudflare --workspace @virtual-office/web && npm run build --workspace @virtual-office/realtime-worker && npm run build --workspace @virtual-office/sprint-0-spike",
     "check:secrets": "node scripts/check-secrets.mjs",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run check:secrets",

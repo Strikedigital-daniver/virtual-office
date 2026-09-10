@@ -28,6 +28,9 @@ export function MediaControls({
   onToggleMic,
   onToggleCamera,
 }: MediaControlsProps) {
+  const syntheticEnabled =
+    process.env.NEXT_PUBLIC_APP_ENV === "staging" ||
+    process.env.NEXT_PUBLIC_APP_ENV === "development";
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [micId, setMicId] = useState("");
@@ -99,6 +102,14 @@ export function MediaControls({
             onChange={(event) => setMicId(event.target.value)}
           >
             <option value="">Predeterminado</option>
+            {syntheticEnabled && (
+              <>
+                <option value="qa-synthetic-alpha">
+                  QA Alpha — tono 440 Hz
+                </option>
+                <option value="qa-synthetic-beta">QA Beta — tono 880 Hz</option>
+              </>
+            )}
             {mics.map((device, index) => (
               <option key={device.deviceId} value={device.deviceId}>
                 {device.label || `Micrófono ${index + 1}`}
@@ -112,6 +123,16 @@ export function MediaControls({
             onChange={(event) => setCameraId(event.target.value)}
           >
             <option value="">Predeterminada</option>
+            {syntheticEnabled && (
+              <>
+                <option value="qa-synthetic-alpha">
+                  QA Alpha — video rojo animado
+                </option>
+                <option value="qa-synthetic-beta">
+                  QA Beta — video azul animado
+                </option>
+              </>
+            )}
             {cameras.map((device, index) => (
               <option key={device.deviceId} value={device.deviceId}>
                 {device.label || `Cámara ${index + 1}`}
@@ -124,6 +145,14 @@ export function MediaControls({
         </div>
       ) : null}
 
+      {syntheticEnabled &&
+        (micId.startsWith("qa-synthetic-") ||
+          cameraId.startsWith("qa-synthetic-")) && (
+          <p role="status">
+            Prueba QA: medios sintéticos seleccionados. Apaga y vuelve a
+            encender los medios para aplicar la selección.
+          </p>
+        )}
       {error ? (
         <p className="error media-error" role="alert">
           {error}

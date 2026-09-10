@@ -1,9 +1,21 @@
 import { z } from "zod";
 
+export * from "./desk-workstation";
 export * from "./protocol";
 export * from "./office-map";
+export * from "./temple-main-map";
+export * from "./legacy-office-layout";
+export * from "./room-definition";
+export * from "./spatial-access";
 export * from "./realtime-ticket";
 export * from "./realtime-sfu";
+export * from "./spatial-worlds";
+export * from "./proximity";
+export * from "./media-authorization";
+export * from "./broadcast-zone";
+export * from "./spatial-chat";
+export * from "./avatar-appearance";
+export * from "./avatar-compose";
 
 export const OfficeRoleSchema = z.enum([
   "owner",

@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 
+import { TEMPLE_WORLD_SLUG } from "@virtual-office/shared";
+
 import { OfficeWorld } from "@/components/office-world";
+import { clubSpatialEntitlementProvider } from "@/lib/spatial";
 import { createClient } from "@/lib/supabase/server";
 
-export const metadata: Metadata = { title: "Oficina" };
+export const metadata: Metadata = { title: "Templo" };
 export const dynamic = "force-dynamic";
 
 interface OfficePageProps {
@@ -13,6 +16,8 @@ interface OfficePageProps {
 
 export default async function OfficePage({ params }: OfficePageProps) {
   const { officeSlug } = await params;
+  if (officeSlug !== TEMPLE_WORLD_SLUG) notFound();
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -20,41 +25,31 @@ export default async function OfficePage({ params }: OfficePageProps) {
   if (!user)
     redirect(`/login?next=${encodeURIComponent(`/office/${officeSlug}`)}`);
 
-  const { data: office } = await supabase
-    .from("offices")
-    .select("id, name, slug, max_members")
-    .eq("slug", officeSlug)
-    .maybeSingle();
-  if (!office) notFound();
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("display_name")
-    .eq("id", user.id)
-    .maybeSingle();
-  const { data: membership } = await supabase
-    .from("office_members")
-    .select("role")
-    .eq("office_id", office.id)
-    .eq("user_id", user.id)
-    .eq("active", true)
-    .maybeSingle();
-  const canAdminister =
-    membership?.role === "owner" || membership?.role === "admin";
+  const entitlements =
+    await clubSpatialEntitlementProvider.getSpatialEntitlements(supabase);
+  if (!entitlements) {
+    return (
+      <section className="panel narrow">
+        <p className="eyebrow">Templo</p>
+        <h1>Sin acceso al Templo</h1>
+        <p>Se requiere membresía activa del Recuerda Club.</p>
+        <form action="/auth/signout" method="post">
+          <button className="secondary" type="submit">
+            Cerrar sesión
+          </button>
+        </form>
+      </section>
+    );
+  }
 
   return (
     <section className="office-stage">
       <header className="office-bar">
         <div>
-          <p className="eyebrow">{office.name}</p>
-          <strong>{profile?.display_name ?? "Integrante"}</strong>
+          <p className="eyebrow">Templo</p>
+          <strong>{entitlements.displayName}</strong>
         </div>
         <nav className="office-actions" aria-label="Acciones de cuenta">
-          {canAdminister ? (
-            <a className="button-link secondary" href="/admin/members">
-              Usuarios
-            </a>
-          ) : null}
           <form action="/auth/signout" method="post">
             <button className="secondary" type="submit">
               Salir
@@ -62,7 +57,7 @@ export default async function OfficePage({ params }: OfficePageProps) {
           </form>
         </nav>
       </header>
-      <OfficeWorld officeSlug={office.slug} />
+      <OfficeWorld officeSlug={TEMPLE_WORLD_SLUG} />
     </section>
   );
 }

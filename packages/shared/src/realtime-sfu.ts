@@ -91,7 +91,6 @@ export const videoConstraints = {
   width: { ideal: 640, max: 640 },
   height: { ideal: 360, max: 360 },
   frameRate: { ideal: 15, max: 15 },
-  facingMode: "user",
 } as const;
 
 export const VIDEO_MAX_BITRATE_BPS = 350_000;

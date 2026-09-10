@@ -21,20 +21,26 @@
   },
   "vars": {
     "NEXT_PUBLIC_APP_ENV": "development",
+    "NEXT_PUBLIC_RECUERDA_APP_URL": "https://recuerda-app-alpha.vercel.app",
   },
   "env": {
     "staging": {
-      "name": "virtual-office-staging",
+      "name": "recuerda-spatial-web-staging",
       "vars": {
         "NEXT_PUBLIC_APP_ENV": "staging",
-        "NEXT_PUBLIC_SUPABASE_URL": "https://qubocpsbxtirmhzhcima.supabase.co",
-        "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_WdWeBu3QVhRpRZYlXt4Yww_k2GYaUrY",
-        "NEXT_PUBLIC_REALTIME_WS_URL": "https://virtual-office-realtime-staging.mhcave.workers.dev",
+        "NEXT_PUBLIC_SUPABASE_URL": "https://wteymdgzlxrfulmoymlx.supabase.co",
+        "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_vK6rnIJ3CZfQ1M4GKdLl5A_XiFhnef3",
+        "NEXT_PUBLIC_REALTIME_WS_URL": "https://recuerda-spatial-realtime-staging.somos-81e.workers.dev",
+        "NEXT_PUBLIC_RECUERDA_APP_URL": "https://recuerda-app-alpha.vercel.app",
       },
       "services": [
         {
           "binding": "WORKER_SELF_REFERENCE",
-          "service": "virtual-office-staging",
+          "service": "recuerda-spatial-web-staging",
+        },
+        {
+          "binding": "REALTIME_WORKER",
+          "service": "recuerda-spatial-realtime-staging",
         },
       ],
     },

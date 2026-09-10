@@ -25,6 +25,7 @@ export interface MediaProvider {
   subscribe(ref: RemoteTrackRef): Promise<void>;
   unsubscribe(ref: RemoteTrackRef): Promise<void>;
   publishedKinds(): MediaKind[];
+  isRemoteBound(ref: RemoteTrackRef): boolean;
   disconnect(): Promise<void>;
 }
 
@@ -33,4 +34,32 @@ export function remoteKey(ref: {
   trackName: string;
 }): string {
   return `${ref.sessionId}:${ref.trackName}`;
+}
+
+export function isCatalogRegistrationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("not registered in this office");
+}
+
+/**
+ * Remote publication or SFU session no longer exists upstream.
+ *
+ * "no track mids" is NOT stale: it usually means the publisher's ICE/SDP is
+ * not ready yet. Evicting the catalog entry prevents the next retry and is
+ * exactly how one side ends up hearing the other forever.
+ */
+export function isStaleSfuPublicationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\(410\)/u.test(message) || /\(404\)/u.test(message);
+}
+
+export function isMediaAuthorizationDenyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("TRACK_NOT_AUTHORIZED") ||
+    message.includes("Track knowledge is not enough") ||
+    message.includes("CLOSED_ROOM") ||
+    message.includes("OFFICE_MEDIA_PRIVATE") ||
+    message.includes("FOCUS_RECEIVER")
+  );
 }

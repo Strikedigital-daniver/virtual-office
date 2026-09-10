@@ -1,16 +1,40 @@
 import { z } from "zod";
 
 import { REALTIME_TICKET_TTL_MS } from "./protocol";
+import {
+  SpatialAccessClassSchema,
+  type SpatialAccessClass,
+} from "./spatial-access";
 
-export const RealtimeTicketClaimsSchema = z.object({
-  version: z.literal(1),
+const TicketClaimsBaseSchema = z.object({
   userId: z.string().uuid(),
   officeId: z.string().uuid(),
   displayName: z.string().min(1).max(40),
   issuedAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().positive(),
 });
+
+export const RealtimeTicketClaimsV1Schema = TicketClaimsBaseSchema.extend({
+  version: z.literal(1),
+});
+
+export const RealtimeTicketClaimsV2Schema = TicketClaimsBaseSchema.extend({
+  version: z.literal(2),
+  accessClass: z.enum(SpatialAccessClassSchema),
+});
+
+export const RealtimeTicketClaimsSchema = z.discriminatedUnion("version", [
+  RealtimeTicketClaimsV1Schema,
+  RealtimeTicketClaimsV2Schema,
+]);
 export type RealtimeTicketClaims = z.infer<typeof RealtimeTicketClaimsSchema>;
+
+export function ticketAccessClass(
+  claims: RealtimeTicketClaims,
+): SpatialAccessClass {
+  if (claims.version === 2) return claims.accessClass;
+  return "CLUB_MEMBER";
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -45,15 +69,21 @@ async function signingKey(secret: string) {
 }
 
 export async function issueRealtimeTicket(
-  input: { userId: string; officeId: string; displayName: string },
+  input: {
+    userId: string;
+    officeId: string;
+    displayName: string;
+    accessClass: SpatialAccessClass;
+  },
   secret: string,
   now = Date.now(),
 ): Promise<string> {
-  const claims: RealtimeTicketClaims = {
-    version: 1,
+  const claims: z.infer<typeof RealtimeTicketClaimsV2Schema> = {
+    version: 2,
     userId: input.userId,
     officeId: input.officeId,
     displayName: input.displayName,
+    accessClass: input.accessClass,
     issuedAt: now,
     expiresAt: now + REALTIME_TICKET_TTL_MS,
   };

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { AvatarAppearanceSchema } from "./avatar-appearance";
+
 export const TILE_SIZE = 32;
 export const PLAYER_SPEED_PX_PER_S = 160;
 export const MAX_SPEED_PX_PER_S = 220;
@@ -20,6 +22,11 @@ export type PublishedTrack = z.infer<typeof PublishedTrackSchema>;
 export const DirectionSchema = z.enum(["up", "down", "left", "right"]);
 export type Direction = z.infer<typeof DirectionSchema>;
 
+export const BroadcastSpeakerSourceSchema = z.enum(["zone", "manual"]);
+export type BroadcastSpeakerSource = z.infer<
+  typeof BroadcastSpeakerSourceSchema
+>;
+
 export const PlayerStateSchema = z.object({
   userId: z.string().uuid(),
   displayName: z.string().min(1).max(40),
@@ -28,7 +35,12 @@ export const PlayerStateSchema = z.object({
   direction: DirectionSchema,
   moving: z.boolean(),
   zoneId: z.string().nullable(),
+  currentDeskId: z.string().nullable().optional(),
+  inBroadcastZone: z.boolean().optional(),
+  broadcastCapacityBlocked: z.boolean().optional(),
+  broadcastSpeakerSource: BroadcastSpeakerSourceSchema.nullable().optional(),
   lastSeq: z.number().int().nonnegative(),
+  appearance: AvatarAppearanceSchema.optional(),
 });
 export type PlayerState = z.infer<typeof PlayerStateSchema>;
 
@@ -44,6 +56,26 @@ export const ClientEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("ping"),
+    clientTime: z.number().finite(),
+  }),
+  z.object({
+    type: z.literal("desk.use"),
+    deskId: z.string().min(1).max(64),
+    clientTime: z.number().finite(),
+  }),
+  z.object({
+    type: z.literal("broadcast.setSpeaker"),
+    targetUserId: z.string().uuid(),
+    clientTime: z.number().finite(),
+  }),
+  z.object({
+    type: z.literal("broadcast.removeSpeaker"),
+    targetUserId: z.string().uuid(),
+    clientTime: z.number().finite(),
+  }),
+  z.object({
+    type: z.literal("player.avatar.set"),
+    appearance: AvatarAppearanceSchema,
     clientTime: z.number().finite(),
   }),
 ]);
@@ -75,11 +107,17 @@ export const ServerEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("player.left"), userId: z.string().uuid() }),
   z.object({
+    type: z.literal("player.avatar.updated"),
+    userId: z.string().uuid(),
+    appearance: AvatarAppearanceSchema,
+    serverTime: z.number(),
+  }),
+  z.object({
     type: z.literal("player.corrected"),
     x: z.number(),
     y: z.number(),
     seq: z.number().int().nonnegative(),
-    reason: z.enum(["speed", "collision", "bounds"]),
+    reason: z.enum(["speed", "collision", "bounds", "zone_access"]),
   }),
   z.object({
     type: z.literal("pong"),
@@ -90,6 +128,17 @@ export const ServerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("error"),
     code: z.string(),
     message: z.string(),
+  }),
+  z.object({
+    type: z.literal("chat.message.created"),
+    messageId: z.string().uuid(),
+    channelId: z.string().uuid(),
+    channelKind: z.enum(["GENERAL", "OFFICE", "DIRECT", "ZONE"]),
+    authorUserId: z.string().uuid(),
+    displayName: z.string().min(1).max(40),
+    body: z.string().min(1).max(2000),
+    createdAt: z.string().min(1),
+    memberUserIds: z.array(z.string().uuid()).optional(),
   }),
 ]);
 export type ServerEvent = z.infer<typeof ServerEventSchema>;

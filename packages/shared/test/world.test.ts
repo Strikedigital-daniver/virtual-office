@@ -53,7 +53,7 @@ describe("office map integrity", () => {
     };
     expect(zoneAtPixel(OFFICE_MAP, inside.x, inside.y)).toBe("zone-meeting");
     const spawn = spawnPixel(OFFICE_MAP.spawnPoints[0]!);
-    expect(zoneAtPixel(OFFICE_MAP, spawn.x, spawn.y)).toBeNull();
+    expect(zoneAtPixel(OFFICE_MAP, spawn.x, spawn.y)).toBe("zone-commons");
   });
 
   it("keeps the pixel size aligned to the tile grid", () => {
@@ -68,6 +68,7 @@ describe("realtime tickets", () => {
     userId: "f69a7f7e-1e3d-45ef-a4e9-2a4512f0ca20",
     officeId: "0b54f2dc-6f19-4f6b-9b2b-7a3d0e6a1c11",
     displayName: "Daniver",
+    accessClass: "CLUB_MEMBER" as const,
   };
 
   it("round-trips valid claims", async () => {
