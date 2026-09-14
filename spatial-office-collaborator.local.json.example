@@ -1,0 +1,4 @@
+{
+  "rosterIndex": 1,
+  "note": "Pick one external worker from spatial-staff-provision.local.json who is NOT in UNLOCK_ADMIN_EMAILS on staging. Copy to spatial-office-collaborator.local.json (gitignored)."
+}

@@ -116,7 +116,7 @@ export function SpatialDebugPanel({
       </section>
 
       {media.remotes.map((remote) => (
-        <section key={remote.userId}>
+        <section key={remote.userId} data-remote-user-id={remote.userId}>
           <h4>REMOTE: {remote.displayName || shortId(remote.userId)}</h4>
           <ul className="spatial-debug-list">
             <li>distanceTiles: {remote.distanceTiles?.toFixed(2) ?? "—"}</li>

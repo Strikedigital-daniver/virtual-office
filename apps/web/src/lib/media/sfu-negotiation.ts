@@ -132,7 +132,9 @@ export function isRecoverableSfuError(error: unknown): boolean {
     /peer transport failed/i.test(message) ||
     /transceiver type does not match/iu.test(message) ||
     /failed to set local offer sdp/iu.test(message) ||
-    /setLocalDescription/iu.test(message)
+    /setLocalDescription/iu.test(message) ||
+    /media session is not yours/i.test(message) ||
+    /SESSION_NOT_OWNED/i.test(message)
   );
 }
 

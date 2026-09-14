@@ -5,6 +5,8 @@ export { OfficeRoom };
 export type { Env };
 
 const OFFICE_PATH = /^\/office\/([0-9a-f-]{36})\/(connect|media\/.+)$/u;
+const INTERNAL_CHAT_PATH =
+  /^\/office\/([0-9a-f-]{36})\/internal\/chat-fanout$/u;
 
 function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -40,6 +42,24 @@ export async function handleRequest(
         capabilities: ["presence", "media"],
       }),
     );
+  }
+
+  const internalMatch = INTERNAL_CHAT_PATH.exec(url.pathname);
+  if (internalMatch) {
+    const secret =
+      request.headers.get("Authorization")?.replace(/^Bearer\s+/iu, "") ??
+      request.headers.get("X-Spatial-Internal-Secret");
+    if (
+      !env.REALTIME_WORKER_SHARED_SECRET ||
+      secret !== env.REALTIME_WORKER_SHARED_SECRET
+    ) {
+      return withSecurityHeaders(
+        Response.json({ error: "UNAUTHORIZED" }, { status: 403 }),
+      );
+    }
+    const officeId = internalMatch[1]!;
+    const stub = env.OFFICE_ROOM.get(env.OFFICE_ROOM.idFromName(officeId));
+    return withSecurityHeaders(await stub.fetch(request));
   }
 
   const match = OFFICE_PATH.exec(url.pathname);

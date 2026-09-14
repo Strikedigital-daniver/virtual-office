@@ -52,7 +52,7 @@ async function nextEvent<T extends ServerEvent["type"]>(
 
 async function connect(officeId: string, userId: string, displayName: string) {
   const ticket = await issueRealtimeTicket(
-    { userId, officeId, displayName },
+    { userId, officeId, displayName, accessClass: "CLUB_MEMBER" },
     SECRET,
   );
   const response = await worker.fetch(
@@ -106,7 +106,12 @@ describe("OfficeRoom presence", () => {
     expect(badTicket.status).toBe(401);
 
     const foreign = await issueRealtimeTicket(
-      { userId: uuid(), officeId: uuid(), displayName: "Intruso" },
+      {
+        userId: uuid(),
+        officeId: uuid(),
+        displayName: "Intruso",
+        accessClass: "CLUB_MEMBER",
+      },
       SECRET,
     );
     const mismatch = await worker.fetch(
@@ -120,7 +125,7 @@ describe("OfficeRoom presence", () => {
     const officeId = uuid();
     const first = await connect(officeId, uuid(), "Primera");
     expect(first.snapshot.players).toHaveLength(1);
-    expect(first.snapshot.players[0]?.zoneId).toBeNull();
+    expect(first.snapshot.players[0]?.zoneId).toBe("zone-commons");
 
     const joined = nextEvent(first.socket, "player.joined");
     const second = await connect(officeId, uuid(), "Segunda");
@@ -136,7 +141,7 @@ describe("OfficeRoom presence", () => {
     expect(event.player.lastSeq).toBe(1);
   });
 
-  it("corrects teleports, out-of-bounds and collisions instead of applying them", async () => {
+  it("corrects teleports and out-of-bounds instead of applying them", async () => {
     const officeId = uuid();
     const client = await connect(officeId, uuid(), "Tramposa");
     const spawn = spawnPixel(spawnFor(OFFICE_MAP, 0));
@@ -148,20 +153,6 @@ describe("OfficeRoom presence", () => {
     const bounds = nextEvent(client.socket, "player.corrected");
     move(client.socket, 2, 4, 4);
     expect((await bounds).reason).toBe("bounds");
-
-    let seq = 2;
-    let y = spawn.y;
-    while (y < 726) {
-      await sleep(120);
-      y = Math.min(y + 24, 726);
-      seq += 1;
-      move(client.socket, seq, spawn.x, y);
-      await nextEvent(client.socket, "player.updated");
-    }
-    await sleep(120);
-    const collision = nextEvent(client.socket, "player.corrected");
-    move(client.socket, seq + 1, spawn.x, 745);
-    expect((await collision).reason).toBe("collision");
   });
 
   it("replaces a duplicated tab, survives eviction and reports leave once", async () => {

@@ -29,7 +29,7 @@
   },
   "env": {
     "staging": {
-      "name": "virtual-office-realtime-staging",
+      "name": "recuerda-spatial-realtime-staging",
       "durable_objects": {
         "bindings": [
           {
@@ -40,7 +40,7 @@
       },
       "vars": {
         "APP_ENV": "staging",
-        "ALLOWED_ORIGIN": "https://virtual-office-staging.mhcave.workers.dev",
+        "ALLOWED_ORIGIN": "https://recuerda-spatial-web-staging.somos-81e.workers.dev",
       },
     },
   },

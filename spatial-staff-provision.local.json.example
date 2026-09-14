@@ -1,0 +1,12 @@
+{
+  "staff": [
+    {
+      "email": "person.one@example.com",
+      "displayName": "Person One"
+    },
+    {
+      "email": "person.two@example.com",
+      "displayName": "Person Two"
+    }
+  ]
+}

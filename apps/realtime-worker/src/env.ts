@@ -4,5 +4,6 @@ export interface Env {
   TICKET_SIGNING_SECRET?: string;
   CLOUDFLARE_REALTIME_APP_ID?: string;
   CLOUDFLARE_REALTIME_APP_SECRET?: string;
+  REALTIME_WORKER_SHARED_SECRET?: string;
   OFFICE_ROOM: DurableObjectNamespace;
 }

@@ -1,18 +1,29 @@
 import { DurableObject } from "cloudflare:workers";
 
 import {
+  authorizeDeskActivation,
+  authorizeSpatialMovement,
+  authorizeStoredTrackPull,
+  canActivateManualSpeaker,
+  canModerateManualSpeaker,
   ClientEventSchema,
   CloseTracksRequestSchema,
+  effectiveBroadcastSpeakerIds,
   MAX_SPEED_PX_PER_S,
   OFFICE_MAP,
+  presenceFromAttachment,
   PublishTracksRequestSchema,
   RealtimeResponseSchema,
+  shouldReceiveChatFanOut,
+  reconcileZoneBroadcastSpeakers,
   RenegotiateRequestSchema,
+  spawnPointsForAccess,
   SubscribeTracksRequestSchema,
+  ticketAccessClass,
   TILE_SIZE,
   isBlockedAtPixel,
   mapPixelSize,
-  spawnFor,
+  parseAvatarAppearance,
   spawnPixel,
   verifyRealtimeTicket,
   zoneAtPixel,
@@ -20,6 +31,8 @@ import {
   type PublishedTrack,
   type RealtimeTicketClaims,
   type ServerEvent,
+  type SpatialAccessClass,
+  type SpatialChatChannelKind,
 } from "@virtual-office/shared";
 
 import type { Env } from "./env";
@@ -28,6 +41,10 @@ interface ConnectionAttachment extends PlayerState {
   connectionId: string;
   joinedAt: number;
   lastMoveAt: number;
+  lastChatAt?: number;
+  accessClass: SpatialAccessClass;
+  zoneBroadcastActive: boolean;
+  manualBroadcastSpeaker: boolean;
 }
 
 interface MediaSessionRecord {
@@ -42,6 +59,8 @@ interface StoredTrack extends PublishedTrack {
 
 const OFFICE_PATH = /^\/office\/([0-9a-f-]{36})\/connect$/u;
 const MEDIA_PATH = /^\/office\/([0-9a-f-]{36})\/media\/(.+)$/u;
+const INTERNAL_CHAT_PATH =
+  /^\/office\/([0-9a-f-]{36})\/internal\/chat-fanout$/u;
 const SESSION_PREFIX = "media-session:";
 const TRACK_PREFIX = "published-track:";
 const MID_PREFIX = "published-mid:";
@@ -66,7 +85,20 @@ function attachmentOf(webSocket: WebSocket): ConnectionAttachment | null {
   return value as ConnectionAttachment;
 }
 
-function playerOf(attachment: ConnectionAttachment): PlayerState {
+function playerOf(
+  attachment: ConnectionAttachment,
+  includeAppearance = false,
+): PlayerState {
+  const presence = presenceFromAttachment(
+    {
+      userId: attachment.userId,
+      accessClass: attachment.accessClass,
+      zoneId: attachment.zoneId,
+      zoneBroadcastActive: attachment.zoneBroadcastActive,
+      manualBroadcastSpeaker: attachment.manualBroadcastSpeaker,
+    },
+    OFFICE_MAP,
+  );
   return {
     userId: attachment.userId,
     displayName: attachment.displayName,
@@ -75,7 +107,16 @@ function playerOf(attachment: ConnectionAttachment): PlayerState {
     direction: attachment.direction,
     moving: attachment.moving,
     zoneId: attachment.zoneId,
+    ...(attachment.currentDeskId
+      ? { currentDeskId: attachment.currentDeskId }
+      : {}),
+    inBroadcastZone: presence.inBroadcastZone,
+    broadcastCapacityBlocked: presence.broadcastCapacityBlocked,
+    broadcastSpeakerSource: presence.broadcastSpeakerSource,
     lastSeq: attachment.lastSeq,
+    ...(includeAppearance && attachment.appearance
+      ? { appearance: attachment.appearance }
+      : {}),
   };
 }
 
@@ -101,6 +142,14 @@ function errorResponse(
 export class OfficeRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const internalMatch = INTERNAL_CHAT_PATH.exec(url.pathname);
+    if (internalMatch) {
+      if (request.method !== "POST") {
+        return errorResponse(405, "METHOD_NOT_ALLOWED", "Use POST.");
+      }
+      return this.handleInternalChatFanout(request);
+    }
+
     const mediaMatch = MEDIA_PATH.exec(url.pathname);
     if (mediaMatch)
       return this.handleMedia(request, mediaMatch[1]!, mediaMatch[2]!);
@@ -165,32 +214,60 @@ export class OfficeRoom extends DurableObject<Env> {
         .filter((userId): userId is string => Boolean(userId)),
     );
 
-    const spawn = spawnPixel(spawnFor(OFFICE_MAP, distinctUsers.size));
+    const accessClass = ticketAccessClass(claims);
+    const spawnPoints = spawnPointsForAccess(OFFICE_MAP, accessClass);
+    const spawnIndex = distinctUsers.size % spawnPoints.length;
+    const spawn = spawnPixel(spawnPoints[spawnIndex]!);
     const now = Date.now();
+    const priorPosition =
+      prior &&
+      authorizeSpatialMovement({
+        accessClass,
+        destinationX: prior.x,
+        destinationY: prior.y,
+        map: OFFICE_MAP,
+      }).allowed
+        ? prior
+        : null;
     const attachment: ConnectionAttachment = {
       connectionId: crypto.randomUUID(),
       userId: claims.userId,
       displayName: claims.displayName,
-      x: prior?.x ?? spawn.x,
-      y: prior?.y ?? spawn.y,
-      direction: prior?.direction ?? "down",
+      x: priorPosition?.x ?? spawn.x,
+      y: priorPosition?.y ?? spawn.y,
+      direction: priorPosition?.direction ?? "down",
       moving: false,
-      zoneId: prior?.zoneId ?? zoneAtPixel(OFFICE_MAP, spawn.x, spawn.y),
-      lastSeq: prior?.lastSeq ?? 0,
-      joinedAt: prior?.joinedAt ?? now,
+      zoneId: zoneAtPixel(
+        OFFICE_MAP,
+        priorPosition?.x ?? spawn.x,
+        priorPosition?.y ?? spawn.y,
+      ),
+      lastSeq: priorPosition?.lastSeq ?? 0,
+      joinedAt: priorPosition?.joinedAt ?? now,
       lastMoveAt: now,
+      accessClass,
+      currentDeskId: null,
+      zoneBroadcastActive: false,
+      manualBroadcastSpeaker: false,
+      ...(priorPosition?.appearance
+        ? { appearance: priorPosition.appearance }
+        : {}),
     };
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(attachment);
+    this.reconcileBroadcastStates();
     for (const duplicate of duplicates) {
       duplicate.webSocket.close(4001, "Replaced by a newer connection");
     }
+    if (duplicates.length > 0) {
+      await this.cleanupUserMedia(claims.userId);
+    }
 
     const players = this.connectedPlayers(claims.userId);
-    players.push(playerOf(attachment));
+    players.push(playerOf(attachment, true));
     safeSend(server, {
       type: "office.snapshot",
       selfUserId: claims.userId,
@@ -199,7 +276,7 @@ export class OfficeRoom extends DurableObject<Env> {
       serverTime: now,
     });
     this.broadcast(
-      { type: "player.joined", player: playerOf(attachment) },
+      { type: "player.joined", player: playerOf(attachment, true) },
       attachment.connectionId,
     );
 
@@ -210,7 +287,7 @@ export class OfficeRoom extends DurableObject<Env> {
     webSocket: WebSocket,
     message: ArrayBuffer | string,
   ): Promise<void> {
-    if (typeof message !== "string" || message.length > 2_048) {
+    if (typeof message !== "string" || message.length > 4_096) {
       safeSend(webSocket, {
         type: "error",
         code: "INVALID_EVENT",
@@ -258,9 +335,57 @@ export class OfficeRoom extends DurableObject<Env> {
       return;
     }
 
+    if (data.type === "desk.use") {
+      this.handleDeskUse(webSocket, attachment, data.deskId, now);
+      return;
+    }
+
+    if (data.type === "broadcast.setSpeaker") {
+      this.handleBroadcastSetSpeaker(
+        webSocket,
+        attachment,
+        data.targetUserId,
+        now,
+      );
+      return;
+    }
+
+    if (data.type === "broadcast.removeSpeaker") {
+      this.handleBroadcastRemoveSpeaker(
+        webSocket,
+        attachment,
+        data.targetUserId,
+        now,
+      );
+      return;
+    }
+
+    if (data.type === "player.avatar.set") {
+      const appearance = parseAvatarAppearance(data.appearance);
+      if (!appearance) {
+        safeSend(webSocket, {
+          type: "error",
+          code: "INVALID_AVATAR",
+          message: "Avatar appearance is not in the trusted catalog.",
+        });
+        return;
+      }
+      const updated: ConnectionAttachment = { ...attachment, appearance };
+      webSocket.serializeAttachment(updated);
+      this.broadcast({
+        type: "player.avatar.updated",
+        userId: attachment.userId,
+        appearance,
+        serverTime: now,
+      });
+      return;
+    }
+
     if (data.seq <= attachment.lastSeq) return;
 
-    const correct = (reason: "speed" | "collision" | "bounds") => {
+    const correct = (
+      reason: "speed" | "collision" | "bounds" | "zone_access",
+    ) => {
       const updated: ConnectionAttachment = {
         ...attachment,
         moving: false,
@@ -306,6 +431,17 @@ export class OfficeRoom extends DurableObject<Env> {
       return;
     }
 
+    const movement = authorizeSpatialMovement({
+      accessClass: attachment.accessClass,
+      destinationX: x,
+      destinationY: y,
+      map: OFFICE_MAP,
+    });
+    if (!movement.allowed) {
+      correct("zone_access");
+      return;
+    }
+
     const updated: ConnectionAttachment = {
       ...attachment,
       x,
@@ -313,10 +449,12 @@ export class OfficeRoom extends DurableObject<Env> {
       direction: data.direction,
       moving: data.moving,
       zoneId: zoneAtPixel(OFFICE_MAP, x, y),
+      currentDeskId: null,
       lastSeq: data.seq,
       lastMoveAt: now,
     };
     webSocket.serializeAttachment(updated);
+    this.reconcileBroadcastStates();
     this.broadcast({
       type: "player.updated",
       player: playerOf(updated),
@@ -331,13 +469,16 @@ export class OfficeRoom extends DurableObject<Env> {
   ): Promise<void> {
     const attachment = attachmentOf(webSocket);
     webSocket.close(code, reason);
+    if (!attachment) return;
+    const replacedByNewerTab = code === 4001;
     if (
-      !attachment ||
+      replacedByNewerTab ||
       this.hasAnotherConnection(attachment.userId, attachment.connectionId)
     ) {
       return;
     }
     this.broadcast({ type: "player.left", userId: attachment.userId });
+    this.reconcileBroadcastStates();
     await this.cleanupUserMedia(attachment.userId);
   }
 
@@ -350,6 +491,7 @@ export class OfficeRoom extends DurableObject<Env> {
       return;
     }
     this.broadcast({ type: "player.left", userId: attachment.userId });
+    this.reconcileBroadcastStates();
     await this.cleanupUserMedia(attachment.userId);
   }
 
@@ -409,6 +551,8 @@ export class OfficeRoom extends DurableObject<Env> {
           return await this.renegotiate(claims.userId, body);
         case "tracks/close":
           return await this.closeTracks(claims.userId, body);
+        case "tracks/announce":
+          return await this.announceTracks(claims.userId, body);
         default:
           return errorResponse(404, "NOT_FOUND", "Unknown media action.");
       }
@@ -454,6 +598,7 @@ export class OfficeRoom extends DurableObject<Env> {
         "The media session is not yours.",
       );
     }
+    await this.revokePublisherTracksOutsideSession(userId, input.sessionId);
     const { sessionId, ...apiBody } = input;
     const result = await this.callRealtime(
       `/sessions/${encodeURIComponent(sessionId)}/tracks/new`,
@@ -480,18 +625,57 @@ export class OfficeRoom extends DurableObject<Env> {
         [trackKey(sessionId, requested.trackName)]: stored,
         [midKey(sessionId, stored.mid)]: stored,
       });
-      this.broadcast({
-        type: "media.track.available",
-        track: {
-          ownerUserId: stored.ownerUserId,
-          sessionId: stored.sessionId,
-          trackName: stored.trackName,
-          mid: stored.mid,
-          kind: stored.kind,
-        },
-      });
+      // Do not broadcast yet. Remotes that subscribe before the publisher
+      // applies the SFU SDP get empty mids and one-way audio. The client
+      // calls tracks/announce after send ICE is connected.
     }
     return result.response;
+  }
+
+  private broadcastStoredTrack(stored: StoredTrack | PublishedTrack): void {
+    this.broadcast({
+      type: "media.track.available",
+      track: {
+        ownerUserId: stored.ownerUserId,
+        sessionId: stored.sessionId,
+        trackName: stored.trackName,
+        mid: stored.mid,
+        kind: stored.kind,
+      },
+    });
+  }
+
+  private async announceTracks(
+    userId: string,
+    body: unknown,
+  ): Promise<Response> {
+    const sessionId =
+      body && typeof body === "object" && "sessionId" in body
+        ? String((body as { sessionId?: unknown }).sessionId ?? "")
+        : "";
+    if (!sessionId) {
+      return errorResponse(
+        400,
+        "INVALID_REQUEST",
+        "The media request is not valid.",
+      );
+    }
+    if (!(await this.ownsSession(userId, sessionId))) {
+      return errorResponse(
+        403,
+        "SESSION_NOT_OWNED",
+        "The media session is not yours.",
+      );
+    }
+    let announced = 0;
+    for (const track of await this.listPublishedTracks()) {
+      if (track.ownerUserId !== userId || track.sessionId !== sessionId) {
+        continue;
+      }
+      this.broadcastStoredTrack(track);
+      announced += 1;
+    }
+    return Response.json({ ok: true, announced });
   }
 
   private async subscribeTracks(
@@ -524,16 +708,56 @@ export class OfficeRoom extends DurableObject<Env> {
           "A publisher cannot subscribe to its own track.",
         );
       }
+      const subscriberAttachment = this.attachmentForUser(userId);
+      const publisherAttachment = this.attachmentForUser(stored.ownerUserId);
+      const broadcastSpeakers = this.activeBroadcastSpeakerIds();
+      const pull = authorizeStoredTrackPull({
+        subscriberUserId: userId,
+        ownerUserId: stored.ownerUserId,
+        subscriber: subscriberAttachment
+          ? {
+              x: subscriberAttachment.x,
+              y: subscriberAttachment.y,
+              zoneId: subscriberAttachment.zoneId,
+            }
+          : null,
+        publisher: publisherAttachment
+          ? {
+              x: publisherAttachment.x,
+              y: publisherAttachment.y,
+              zoneId: publisherAttachment.zoneId,
+            }
+          : null,
+        ...(subscriberAttachment?.accessClass &&
+        publisherAttachment?.accessClass
+          ? {
+              subscriberAccessClass: subscriberAttachment.accessClass,
+              publisherAccessClass: publisherAttachment.accessClass,
+            }
+          : {}),
+        map: OFFICE_MAP,
+        trackKind: stored.kind,
+        broadcastSpeakerUserIds: broadcastSpeakers,
+      });
+      if (!pull.ok) {
+        return errorResponse(
+          403,
+          "TRACK_NOT_AUTHORIZED",
+          `Track knowledge is not enough (${pull.reason}).`,
+        );
+      }
     }
 
     const { sessionId, ...apiBody } = input;
-    return (
-      await this.callRealtime(
-        `/sessions/${encodeURIComponent(sessionId)}/tracks/new`,
-        "POST",
-        apiBody,
-      )
-    ).response;
+    const result = await this.callRealtime(
+      `/sessions/${encodeURIComponent(sessionId)}/tracks/new`,
+      "POST",
+      apiBody,
+    );
+    if (result.response.status === 410) {
+      await this.ctx.storage.delete(sessionKey(sessionId));
+    }
+    return result.response;
   }
 
   private async renegotiate(userId: string, body: unknown): Promise<Response> {
@@ -594,6 +818,28 @@ export class OfficeRoom extends DurableObject<Env> {
     return result.response;
   }
 
+  private attachmentForUser(userId: string): ConnectionAttachment | null {
+    let latest: ConnectionAttachment | null = null;
+    for (const webSocket of this.ctx.getWebSockets()) {
+      const attachment = attachmentOf(webSocket);
+      if (attachment?.userId !== userId) continue;
+      if (!latest || attachment.joinedAt >= latest.joinedAt) {
+        latest = attachment;
+      }
+    }
+    return latest;
+  }
+
+  private playerForUser(userId: string): {
+    x: number;
+    y: number;
+    zoneId: string | null;
+  } | null {
+    const latest = this.attachmentForUser(userId);
+    if (!latest) return null;
+    return { x: latest.x, y: latest.y, zoneId: latest.zoneId };
+  }
+
   private async ownsSession(
     userId: string,
     sessionId: string,
@@ -628,6 +874,30 @@ export class OfficeRoom extends DurableObject<Env> {
       sessionId: stored.sessionId,
       trackName: stored.trackName,
     });
+  }
+
+  private async revokePublisherTracksOutsideSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const tracks = await this.ctx.storage.list<StoredTrack>({
+      prefix: TRACK_PREFIX,
+    });
+    for (const track of [...tracks.values()].filter(
+      (candidate) =>
+        candidate.ownerUserId === userId && candidate.sessionId !== sessionId,
+    )) {
+      try {
+        await this.callRealtime(
+          `/sessions/${encodeURIComponent(track.sessionId)}/tracks/close`,
+          "PUT",
+          { tracks: [{ mid: track.mid }], force: true },
+        );
+      } catch {
+        // Realtime garbage collects inactive tracks; the registry must be cleaned regardless.
+      }
+      await this.deleteTrack(track);
+    }
   }
 
   private async cleanupUserMedia(userId: string): Promise<void> {
@@ -709,6 +979,301 @@ export class OfficeRoom extends DurableObject<Env> {
     };
   }
 
+  private deskOccupantSnapshots(): Array<{
+    userId: string;
+    currentDeskId: string | null;
+  }> {
+    const latest = new Map<string, ConnectionAttachment>();
+    for (const webSocket of this.ctx.getWebSockets()) {
+      const attachment = attachmentOf(webSocket);
+      if (!attachment) continue;
+      const current = latest.get(attachment.userId);
+      if (!current || attachment.joinedAt >= current.joinedAt) {
+        latest.set(attachment.userId, attachment);
+      }
+    }
+    return [...latest.values()].map((attachment) => ({
+      userId: attachment.userId,
+      currentDeskId: attachment.currentDeskId ?? null,
+    }));
+  }
+
+  private handleDeskUse(
+    webSocket: WebSocket,
+    attachment: ConnectionAttachment,
+    deskId: string,
+    now: number,
+  ): void {
+    const decision = authorizeDeskActivation({
+      deskId,
+      userId: attachment.userId,
+      x: attachment.x,
+      y: attachment.y,
+      accessClass: attachment.accessClass,
+      map: OFFICE_MAP,
+      occupants: this.deskOccupantSnapshots(),
+      currentDeskId: attachment.currentDeskId ?? null,
+    });
+
+    if (!decision.allowed) {
+      safeSend(webSocket, {
+        type: "error",
+        code: `DESK_${decision.reason.toUpperCase()}`,
+        message: "Workstation activation was rejected.",
+      });
+      return;
+    }
+
+    const snap = decision.snapPosition!;
+    const updated: ConnectionAttachment = {
+      ...attachment,
+      x: snap.x,
+      y: snap.y,
+      moving: false,
+      direction: decision.desk?.orientation ?? attachment.direction,
+      zoneId: zoneAtPixel(OFFICE_MAP, snap.x, snap.y),
+      currentDeskId: deskId,
+      lastMoveAt: now,
+    };
+    webSocket.serializeAttachment(updated);
+    this.reconcileBroadcastStates();
+    this.broadcast({
+      type: "player.updated",
+      player: playerOf(updated),
+      serverTime: now,
+    });
+  }
+
+  private handleInternalChatFanout(request: Request): Promise<Response> {
+    return (async () => {
+      let parsed: unknown;
+      try {
+        parsed = await request.json();
+      } catch {
+        return errorResponse(400, "INVALID_JSON", "Expected JSON body.");
+      }
+      if (!parsed || typeof parsed !== "object") {
+        return errorResponse(400, "INVALID_EVENT", "Invalid fan-out payload.");
+      }
+      const event = parsed as {
+        type?: string;
+        messageId?: string;
+        channelId?: string;
+        channelKind?: SpatialChatChannelKind;
+        authorUserId?: string;
+        displayName?: string;
+        body?: string;
+        createdAt?: string;
+        memberUserIds?: string[];
+      };
+      if (
+        event.type !== "chat.message.created" ||
+        !event.messageId ||
+        !event.channelId ||
+        !event.channelKind ||
+        !event.authorUserId ||
+        !event.displayName ||
+        !event.body ||
+        !event.createdAt
+      ) {
+        return errorResponse(400, "INVALID_EVENT", "Invalid chat fan-out.");
+      }
+
+      const payload: ServerEvent = {
+        type: "chat.message.created",
+        messageId: event.messageId,
+        channelId: event.channelId,
+        channelKind: event.channelKind,
+        authorUserId: event.authorUserId,
+        displayName: event.displayName,
+        body: event.body,
+        createdAt: event.createdAt,
+        ...(event.memberUserIds ? { memberUserIds: event.memberUserIds } : {}),
+      };
+
+      for (const webSocket of this.ctx.getWebSockets()) {
+        const attachment = attachmentOf(webSocket);
+        if (!attachment) continue;
+        if (
+          !shouldReceiveChatFanOut({
+            accessClass: attachment.accessClass,
+            userId: attachment.userId,
+            channelKind: event.channelKind,
+            ...(event.memberUserIds
+              ? { memberUserIds: event.memberUserIds }
+              : {}),
+          })
+        ) {
+          continue;
+        }
+        safeSend(webSocket, payload);
+      }
+
+      return Response.json({ ok: true });
+    })();
+  }
+
+  private broadcastAttachmentStates() {
+    return [...this.latestAttachmentsMap().values()].map(({ attachment }) => ({
+      userId: attachment.userId,
+      accessClass: attachment.accessClass,
+      zoneId: attachment.zoneId,
+      zoneBroadcastActive: attachment.zoneBroadcastActive,
+      manualBroadcastSpeaker: attachment.manualBroadcastSpeaker,
+    }));
+  }
+
+  private activeBroadcastSpeakerIds(): Set<string> {
+    return effectiveBroadcastSpeakerIds(this.broadcastAttachmentStates());
+  }
+
+  private latestAttachmentsMap(): Map<
+    string,
+    { webSocket: WebSocket; attachment: ConnectionAttachment }
+  > {
+    const latest = new Map<
+      string,
+      { webSocket: WebSocket; attachment: ConnectionAttachment }
+    >();
+    for (const webSocket of this.ctx.getWebSockets()) {
+      const attachment = attachmentOf(webSocket);
+      if (!attachment) continue;
+      const current = latest.get(attachment.userId);
+      if (!current || attachment.joinedAt >= current.attachment.joinedAt) {
+        latest.set(attachment.userId, { webSocket, attachment });
+      }
+    }
+    return latest;
+  }
+
+  private reconcileBroadcastStates(): void {
+    const entries = [...this.latestAttachmentsMap().entries()];
+    const states = reconcileZoneBroadcastSpeakers(
+      entries.map(([, { attachment }]) => ({
+        userId: attachment.userId,
+        accessClass: attachment.accessClass,
+        zoneId: attachment.zoneId,
+        zoneBroadcastActive: attachment.zoneBroadcastActive,
+        manualBroadcastSpeaker: attachment.manualBroadcastSpeaker,
+      })),
+      OFFICE_MAP,
+    );
+    const now = Date.now();
+    for (const [userId, { webSocket, attachment }] of entries) {
+      const zoneState = states.get(userId);
+      const nextZoneActive = zoneState?.active ?? false;
+      if (attachment.zoneBroadcastActive === nextZoneActive) continue;
+      const updated: ConnectionAttachment = {
+        ...attachment,
+        zoneBroadcastActive: nextZoneActive,
+      };
+      webSocket.serializeAttachment(updated);
+      this.broadcast({
+        type: "player.updated",
+        player: playerOf(updated),
+        serverTime: now,
+      });
+    }
+  }
+
+  private updateUserAttachment(
+    userId: string,
+    updater: (current: ConnectionAttachment) => ConnectionAttachment,
+  ): ConnectionAttachment | null {
+    let updated: ConnectionAttachment | null = null;
+    for (const webSocket of this.ctx.getWebSockets()) {
+      const attachment = attachmentOf(webSocket);
+      if (attachment?.userId !== userId) continue;
+      updated = updater(attachment);
+      webSocket.serializeAttachment(updated);
+    }
+    return updated;
+  }
+
+  private handleBroadcastSetSpeaker(
+    webSocket: WebSocket,
+    attachment: ConnectionAttachment,
+    targetUserId: string,
+    now: number,
+  ): void {
+    if (!canModerateManualSpeaker(attachment.accessClass)) {
+      safeSend(webSocket, {
+        type: "error",
+        code: "BROADCAST_NOT_AUTHORIZED",
+        message: "Manual speaker moderation is not allowed.",
+      });
+      return;
+    }
+
+    const decision = canActivateManualSpeaker({
+      attachments: this.broadcastAttachmentStates(),
+      map: OFFICE_MAP,
+      targetUserId,
+    });
+    if (!decision.allowed) {
+      safeSend(webSocket, {
+        type: "error",
+        code: `BROADCAST_${decision.reason}`,
+        message: "Manual speaker activation was rejected.",
+      });
+      return;
+    }
+
+    const updated = this.updateUserAttachment(targetUserId, (current) => ({
+      ...current,
+      manualBroadcastSpeaker: true,
+    }));
+    if (!updated) {
+      safeSend(webSocket, {
+        type: "error",
+        code: "BROADCAST_TARGET_NOT_FOUND",
+        message: "The target participant is not connected.",
+      });
+      return;
+    }
+
+    this.broadcast({
+      type: "player.updated",
+      player: playerOf(updated),
+      serverTime: now,
+    });
+  }
+
+  private handleBroadcastRemoveSpeaker(
+    webSocket: WebSocket,
+    attachment: ConnectionAttachment,
+    targetUserId: string,
+    now: number,
+  ): void {
+    if (!canModerateManualSpeaker(attachment.accessClass)) {
+      safeSend(webSocket, {
+        type: "error",
+        code: "BROADCAST_NOT_AUTHORIZED",
+        message: "Manual speaker moderation is not allowed.",
+      });
+      return;
+    }
+
+    const updated = this.updateUserAttachment(targetUserId, (current) => ({
+      ...current,
+      manualBroadcastSpeaker: false,
+    }));
+    if (!updated) {
+      safeSend(webSocket, {
+        type: "error",
+        code: "BROADCAST_TARGET_NOT_FOUND",
+        message: "The target participant is not connected.",
+      });
+      return;
+    }
+
+    this.broadcast({
+      type: "player.updated",
+      player: playerOf(updated),
+      serverTime: now,
+    });
+  }
+
   private connectedPlayers(excludeUserId?: string): PlayerState[] {
     const latest = new Map<string, ConnectionAttachment>();
     for (const webSocket of this.ctx.getWebSockets()) {
@@ -719,7 +1284,7 @@ export class OfficeRoom extends DurableObject<Env> {
         latest.set(attachment.userId, attachment);
       }
     }
-    return [...latest.values()].map(playerOf);
+    return [...latest.values()].map((attachment) => playerOf(attachment, true));
   }
 
   private hasAnotherConnection(userId: string, connectionId: string): boolean {

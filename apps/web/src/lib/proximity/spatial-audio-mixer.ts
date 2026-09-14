@@ -49,6 +49,51 @@ export function webAudioIsAvailable(): boolean {
   );
 }
 
+function registerE2eMixerAnalyser(
+  streamKey: string,
+  ownerUserId: string | undefined,
+  context: SpatialAudioContext,
+  gain: SpatialAudioGraph["gain"],
+): void {
+  if (typeof window === "undefined") return;
+  const e2e = (
+    window as Window & {
+      __voE2e?: {
+        registerMixerAnalyser?: (input: {
+          streamKey: string;
+          ownerUserId: string | null;
+          analyser: AnalyserNode;
+          readGain: () => number;
+          sampleRate: number;
+        }) => void;
+        unregisterMixerAnalyser?: (streamKey: string) => void;
+      };
+    }
+  ).__voE2e;
+  if (!e2e?.registerMixerAnalyser) return;
+  const analyser = (
+    context as unknown as AudioContext
+  ).createAnalyser() as AnalyserNode;
+  analyser.fftSize = 2048;
+  gain.connect(analyser);
+  e2e.registerMixerAnalyser({
+    streamKey,
+    ownerUserId: ownerUserId ?? null,
+    analyser,
+    readGain: () => gain.gain.value,
+    sampleRate: (context as unknown as AudioContext).sampleRate,
+  });
+}
+
+function unregisterE2eMixerAnalyser(streamKey: string): void {
+  if (typeof window === "undefined") return;
+  (
+    window as Window & {
+      __voE2e?: { unregisterMixerAnalyser?: (streamKey: string) => void };
+    }
+  ).__voE2e?.unregisterMixerAnalyser?.(streamKey);
+}
+
 function defaultContextFactory(): SpatialAudioContext {
   const Ctor =
     window.AudioContext ||
@@ -110,7 +155,11 @@ export class SpatialAudioMixer {
     void context.resume().catch(() => undefined);
   }
 
-  attach(streamKey: string, stream: MediaStream): boolean {
+  attach(
+    streamKey: string,
+    stream: MediaStream,
+    options?: { ownerUserId?: string },
+  ): boolean {
     const existing = this.nodes.get(streamKey);
     if (existing && existing.stream === stream) return true;
 
@@ -126,6 +175,12 @@ export class SpatialAudioMixer {
       source.connect(gain);
       gain.connect(context.destination);
       this.nodes.set(streamKey, { source, gain, stream });
+      registerE2eMixerAnalyser(
+        streamKey,
+        options?.ownerUserId,
+        context,
+        gain,
+      );
       this.ensurePlayback();
       return true;
     } catch {
@@ -154,6 +209,7 @@ export class SpatialAudioMixer {
   }
 
   detach(streamKey: string): void {
+    unregisterE2eMixerAnalyser(streamKey);
     const node = this.nodes.get(streamKey);
     if (!node) return;
     try {
@@ -213,7 +269,11 @@ export function syncSpatialAudioGraph(
   }
 
   for (const media of desired) {
-    if (mixer.attach(media.key, media.stream)) {
+    if (
+      mixer.attach(media.key, media.stream, {
+        ownerUserId: media.ref.ownerUserId,
+      })
+    ) {
       mixer.setGain(media.key, media.audioGain);
     } else {
       fallbackKeys.push(media.key);

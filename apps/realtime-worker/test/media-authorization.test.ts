@@ -43,7 +43,12 @@ describe("media switchboard authorization", () => {
   it("refuses a ticket issued for another office", async () => {
     const officeId = uuid();
     const foreign = await issueRealtimeTicket(
-      { userId: uuid(), officeId: uuid(), displayName: "Intruso" },
+      {
+        userId: uuid(),
+        officeId: uuid(),
+        displayName: "Intruso",
+        accessClass: "CLUB_MEMBER",
+      },
       SECRET,
     );
     const response = await mediaCall(officeId, "session", foreign);
@@ -56,7 +61,12 @@ describe("media switchboard authorization", () => {
   it("refuses to pull a track that is not registered in the office", async () => {
     const officeId = uuid();
     const ticket = await issueRealtimeTicket(
-      { userId: uuid(), officeId, displayName: "Curiosa" },
+      {
+        userId: uuid(),
+        officeId,
+        displayName: "Curiosa",
+        accessClass: "CLUB_MEMBER",
+      },
       SECRET,
     );
     const response = await mediaCall(officeId, "tracks/subscribe", ticket, {
@@ -81,7 +91,12 @@ describe("media switchboard authorization", () => {
   it("rejects malformed media payloads", async () => {
     const officeId = uuid();
     const ticket = await issueRealtimeTicket(
-      { userId: uuid(), officeId, displayName: "Torpe" },
+      {
+        userId: uuid(),
+        officeId,
+        displayName: "Torpe",
+        accessClass: "CLUB_MEMBER",
+      },
       SECRET,
     );
     const response = await mediaCall(officeId, "tracks/publish", ticket, {
@@ -89,6 +104,26 @@ describe("media switchboard authorization", () => {
       tracks: [],
     });
     expect(response.status).toBe(400);
+  });
+
+  it("refuses to announce tracks for a session the caller does not own", async () => {
+    const officeId = uuid();
+    const ticket = await issueRealtimeTicket(
+      {
+        userId: uuid(),
+        officeId,
+        displayName: "Ajeno",
+        accessClass: "CLUB_MEMBER",
+      },
+      SECRET,
+    );
+    const response = await mediaCall(officeId, "tracks/announce", ticket, {
+      sessionId: "session-that-is-not-mine",
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "SESSION_NOT_OWNED",
+    });
   });
 
   it("answers CORS preflight only for the configured origin", async () => {
@@ -110,7 +145,12 @@ describe("media switchboard authorization", () => {
   it("degrades safely when Realtime credentials are absent", async () => {
     const officeId = uuid();
     const ticket = await issueRealtimeTicket(
-      { userId: uuid(), officeId, displayName: "Sin credenciales" },
+      {
+        userId: uuid(),
+        officeId,
+        displayName: "Sin credenciales",
+        accessClass: "CLUB_MEMBER",
+      },
       SECRET,
     );
     const response = await mediaCall(officeId, "session", ticket);

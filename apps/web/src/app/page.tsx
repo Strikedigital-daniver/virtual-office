@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation";
 
+import { TEMPLE_WORLD_SLUG } from "@virtual-office/shared";
+
 import { getPublicEnvironment } from "@/lib/env";
+import { clubSpatialEntitlementProvider } from "@/lib/spatial";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -25,20 +28,16 @@ export default async function HomePage() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: membership } = await supabase
-    .from("office_members")
-    .select("office_id")
-    .eq("user_id", user.id)
-    .eq("active", true)
-    .limit(1)
-    .maybeSingle();
-  if (!membership) {
+  const entitlements =
+    await clubSpatialEntitlementProvider.getSpatialEntitlements(supabase);
+  if (!entitlements) {
     return (
       <section className="panel narrow">
         <p className="eyebrow">Acceso autenticado</p>
-        <h1>Tu cuenta aún no pertenece a una oficina.</h1>
+        <h1>Tu cuenta no tiene acceso activo al Recuerda Club.</h1>
         <p>
-          Abre el enlace de invitación que recibiste para terminar el ingreso.
+          Se requiere una membresía activa con <code>club_access</code> para
+          entrar al Templo.
         </p>
         <form action="/auth/signout" method="post">
           <button className="secondary" type="submit">
@@ -49,11 +48,5 @@ export default async function HomePage() {
     );
   }
 
-  const { data: office } = await supabase
-    .from("offices")
-    .select("slug")
-    .eq("id", membership.office_id)
-    .single();
-  if (!office) redirect("/login?error=membership");
-  redirect(`/office/${encodeURIComponent(office.slug)}`);
+  redirect(`/office/${encodeURIComponent(TEMPLE_WORLD_SLUG)}`);
 }

@@ -3,6 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { resolveAccessLinkEmail } from "@/lib/access-links";
 import { getServerEnvironment } from "@/lib/env";
+import {
+  LEGACY_OFFICE_PROVISIONING_DISABLED,
+  legacyOfficeProvisioningBlocked,
+} from "@/lib/legacy-office-provisioning";
 import { isSameOrigin, sha256Hex } from "@/lib/security";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -28,6 +32,9 @@ async function ensureAuthUser(
 }
 
 export async function POST(request: NextRequest) {
+  if (LEGACY_OFFICE_PROVISIONING_DISABLED) {
+    return legacyOfficeProvisioningBlocked();
+  }
   if (!isSameOrigin(request)) {
     return NextResponse.json(
       { error: "Origen no permitido." },

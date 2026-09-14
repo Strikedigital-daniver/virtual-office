@@ -39,7 +39,7 @@ export function ProximityMediaDebugPanel({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.remoteParticipantId}>
+            <tr key={row.remoteParticipantId} data-remote-id={row.remoteParticipantId}>
               <td>{row.remoteParticipantId.slice(0, 8)}</td>
               <td>{Math.round(row.distance)}</td>
               <td>{row.proximityZone}</td>

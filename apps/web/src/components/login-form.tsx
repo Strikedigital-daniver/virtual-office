@@ -3,14 +3,13 @@
 import { useState, type FormEvent } from "react";
 
 import { createClient } from "@/lib/supabase/client";
-import { usernameToEmail } from "@/lib/usernames";
 
 interface LoginFormProps {
   nextPath: string;
 }
 
 export function LoginForm({ nextPath }: LoginFormProps) {
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -20,20 +19,20 @@ export function LoginForm({ nextPath }: LoginFormProps) {
     setSubmitting(true);
     setMessage(null);
 
-    const email = usernameToEmail(username);
-    if (!email) {
-      setMessage("Escribe tu nombre de usuario, sin espacios ni símbolos.");
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail.includes("@")) {
+      setMessage("Escribe un correo válido.");
       setSubmitting(false);
       return;
     }
 
     const supabase = createClient();
     const { error } = await supabase.auth.signInWithPassword({
-      email,
+      email: normalizedEmail,
       password,
     });
     if (error) {
-      setMessage("Usuario o contraseña incorrectos.");
+      setMessage("Correo o contraseña incorrectos.");
       setSubmitting(false);
       return;
     }
@@ -42,22 +41,20 @@ export function LoginForm({ nextPath }: LoginFormProps) {
   }
 
   return (
-    <form className="stack" onSubmit={submit}>
-      <label htmlFor="username">Usuario</label>
+    <form className="stack" onSubmit={submit} method="post" action="#">
+      <label htmlFor="email">Correo</label>
       <input
-        id="username"
-        name="username"
-        type="text"
-        autoComplete="username"
+        id="email"
+        type="email"
+        autoComplete="email"
         autoCapitalize="none"
         required
-        value={username}
-        onChange={(event) => setUsername(event.target.value)}
+        value={email}
+        onChange={(event) => setEmail(event.target.value)}
       />
       <label htmlFor="password">Contraseña</label>
       <input
         id="password"
-        name="password"
         type="password"
         autoComplete="current-password"
         required

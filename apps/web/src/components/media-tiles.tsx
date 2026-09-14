@@ -72,6 +72,7 @@ function ParticipantTile({
   return (
     <figure
       className={`media-tile participant-tile${showVideo ? "" : " camera-off"}`}
+      data-user-id={participant.userId}
       style={
         showVideo
           ? {
