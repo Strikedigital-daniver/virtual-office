@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { spatialTestEnvironment } from "./lib/spatial-test-environment.mjs";
 
 // Never reads application configuration or remote Supabase credentials.
 const root = new URL("../", import.meta.url);
@@ -53,26 +54,13 @@ const result = spawnSync(
     encoding: "utf8",
     timeout: 120_000,
     maxBuffer: 4 * 1024 * 1024,
-    env: {
-      ...Object.fromEntries(
-        Object.entries(process.env).filter(([name]) => !name.startsWith("PG")),
-      ),
-      // Do not inherit libpq options, service definitions, or production passwords.
-      PGHOST: host,
-      PGHOSTADDR: host === "localhost" ? "127.0.0.1" : host,
-      PGPORT: port,
-      PGDATABASE: "spatial_contract_test",
-      PGUSER: process.env.SPATIAL_TEST_PGUSER ?? "postgres",
-      PGPASSWORD: process.env.SPATIAL_TEST_PGPASSWORD ?? "",
-      PGPASSFILE: fileURLToPath(
+    env: spatialTestEnvironment(process.env, {
+      host,
+      port,
+      passwordFile: fileURLToPath(
         new URL("spatial/tests/no-password-file", root),
       ),
-      PGSERVICE: "",
-      PGSERVICEFILE: "",
-      PGOPTIONS: "",
-      PGCONNECT_TIMEOUT: "5",
-      PGSSLMODE: "disable",
-    },
+    }),
   },
 );
 if (result.stdout) process.stdout.write(result.stdout);

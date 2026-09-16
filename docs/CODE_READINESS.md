@@ -1,6 +1,6 @@
 # Preparación de código — Recuerda Spatial
 
-Estado: **EN VALIDACIÓN; infraestructura fuera de alcance**.
+Estado: **VALIDACIÓN INCOMPLETA — PR creada; CI en corrección/verificación**.
 
 Base: `main` remoto `60701552bac00fe8980a3470cfc085903ee07162`, revisado el
 2026-09-16. Rama: `codex/code-readiness`. El commit candidato y los enlaces a CI
@@ -119,3 +119,24 @@ Commit + CI verde de ese candidato + regresiones + dependencias evaluadas +
 revisión independiente sin bloqueadores de código + PR con evidencia y límites.
 Hasta completar esos gates: **VALIDACIÓN INCOMPLETA**. Aprobarlos solo habilita
 **CÓDIGO VALIDADO; INFRAESTRUCTURA PENDIENTE**, no producción.
+
+## Punto de continuación — 2026-09-16
+
+Candidato de código subido: `b641b1f7a42409d4a47d972001181b0b15223cce`, rama
+`codex/code-readiness`. Revisión independiente confirmada para ese SHA, sin
+bloqueadores accionables. Árbol limpio al revisar. Las 384 pruebas, instalación,
+lint, tipos, build y escaneo post-build aprobaron localmente; scanner: 292
+fuentes y 45 assets cliente.
+
+La conexión GitHub rechazó crear PR con HTTP403. Tras autorización explícita
+del usuario para usar el navegador e iniciar él su sesión, se creó la
+[PR #1](https://github.com/Strikedigital-daniver/virtual-office/pull/1).
+
+[Primera ejecución CI](https://github.com/Strikedigital-daniver/virtual-office/actions/runs/35143012344):
+el job Spatial detectó `psql: service file "" not found` antes de ejecutar SQL.
+El harness eliminaba variables PG heredadas pero reintroducía PGSERVICE vacío:
+libpq lo interpreta como selección de servicio. Se corrige omitiendo selectores
+de servicio completamente, con dos regresiones del entorno aislado.
+
+Siguiente acción: comprobar quality/database/spatial-database para el nuevo
+commit, corregir fallos y registrar el SHA con CI verde. No fusionar ni desplegar.
