@@ -1,6 +1,12 @@
 # Preparación de código — Recuerda Spatial
 
-Estado: **VALIDACIÓN INCOMPLETA — PR creada; CI en corrección/verificación**.
+Estado: **CÓDIGO VALIDADO; INFRAESTRUCTURA PENDIENTE**.
+
+[PR #1](https://github.com/Strikedigital-daniver/virtual-office/pull/1), abierta y
+sin fusionar. Último cambio de código: `0843ea09329f387c19ef5bf56a29bb2f384f645e`.
+[CI aprobado de ese código](https://github.com/Strikedigital-daniver/virtual-office/actions/runs/35143265892).
+El cierre documental posterior también debe tener CI verde en el SHA final de
+la PR antes de entregar; el SHA exacto se identifica en la entrega y la PR.
 
 Base: `main` remoto `60701552bac00fe8980a3470cfc085903ee07162`, revisado el
 2026-09-16. Rama: `codex/code-readiness`. El commit candidato y los enlaces a CI
@@ -72,19 +78,18 @@ El primer build bajo sandbox Windows falló por permisos del compilador; el
 reintento autorizado completó Next/OpenNext y los dos empaquetados dry-run.
 Advertencias de Windows/OpenNext y claves duplicadas internas de Phaser no
 impidieron compilar. Los tests locales Worker emitieron advertencias de logs/
-análisis estático por sandbox; CI Linux es la segunda comprobación pendiente.
+análisis estático por sandbox; CI Linux confirmó la instalación y validación completas.
 
-| Comprobación                                                     | Entorno                                      | Estado                                                             |
-| ---------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
-| Regresiones de chat/permisos/medios                              | Vitest, navegadores y clientes/SFU simulados | Suites dirigidas aprobadas; ejecución completa candidata pendiente |
-| Presencia y PWA                                                  | Vitest fake clocks/jsdom/VM                  | 11 pruebas dirigidas aprobadas                                     |
-| Login y SW offline                                               | Vitest/jsdom/VM                              | 5 pruebas aprobadas                                                |
-| Instalación limpia, lint, tipos, todos los tests, build, escaneo | Local / CI del candidato                     | En curso                                                           |
-| RLS legacy                                                       | Supabase local desechable de GitHub          | Pendiente nuevo candidato; no valida Club                          |
-| RLS/ACL Spatial                                                  | PostgreSQL17 desechable de GitHub            | Preparado; local no tiene Docker ni psql; pendiente CI             |
-| SQL/roles/schema Club real, REST/RLS reales                      | Supabase real                                | NO EJECUTADO                                                       |
-| Conversación real y cierre de medios SFU                         | Cloudflare y usuarios                        | NO EJECUTADO                                                       |
-| Instalación/actualización PWA real, carga/capacidad              | Navegadores/dispositivos reales              | NO EJECUTADO                                                       |
+| Comprobación                                                 | Entorno                             | Resultado                                                                    |
+| ------------------------------------------------------------ | ----------------------------------- | ---------------------------------------------------------------------------- |
+| Regresiones de chat/permisos/medios/presencia/PWA            | Vitest y clientes/SFU simulados     | 380 pruebas aprobadas (Worker31 + web222 + shared121 + spike6)               |
+| Escáner y aislamiento del ejecutor SQL                       | Node test runner                    | 6 pruebas aprobadas; total de código 386                                     |
+| Instalación, auditoría, formato, lint, tipos, build, escaneo | CI Ubuntu/Node24                    | APROBADO; cero vulnerabilidades conocidas; 294 fuentes y45 assets escaneados |
+| RLS legacy                                                   | Supabase local desechable de GitHub | 32 pruebas pgTAP aprobadas; no valida Club                                   |
+| RLS/ACL Spatial                                              | PostgreSQL17 desechable de GitHub   | 191 comprobaciones aprobadas sobre seis SQL versionados; todo revertido      |
+| SQL/roles/schema Club real, REST/RLS reales                  | Supabase real                       | NO EJECUTADO                                                                 |
+| Conversación real y cierre de medios SFU                     | Cloudflare y usuarios               | NO EJECUTADO                                                                 |
+| Instalación/actualización PWA real, carga/capacidad          | Navegadores/dispositivos reales     | NO EJECUTADO                                                                 |
 
 `test:e2e` legacy es un contrato unitario del manifest: no se presenta como un
 recorrido real de navegador. Las suites Playwright de medios requieren servicios,
@@ -95,7 +100,9 @@ cuentas y dispositivos; no se ejecutan ni se marcan verdes en esta revisión.
 Revisión read-only separada encontró cierre SFU parcial, actualización PWA tras
 primera instalación, falta de retry/deadline medios y desfase de reloj. Correcciones
 y regresiones incorporadas. Segunda revisión del árbol final sin hallazgos
-accionables pendientes. Falta vincularla al commit candidato y comprobar CI.
+accionables pendientes. Confirmada para `b641b1f` y para el delta SQL del
+commit `0843ea09329f387c19ef5bf56a29bb2f384f645e`. Los tres jobs CI de ese
+último commit aprobaron. La revisión no acredita servicios reales.
 
 ## Bloqueos externos / decisiones
 
@@ -117,26 +124,28 @@ Procedimiento concreto: `runbooks/spatial-candidate-validation.md`.
 
 Commit + CI verde de ese candidato + regresiones + dependencias evaluadas +
 revisión independiente sin bloqueadores de código + PR con evidencia y límites.
-Hasta completar esos gates: **VALIDACIÓN INCOMPLETA**. Aprobarlos solo habilita
-**CÓDIGO VALIDADO; INFRAESTRUCTURA PENDIENTE**, no producción.
+Los gates de código quedaron aprobados en `0843ea0`; antes de entregar una
+revisión documental posterior se comprueba nuevamente CI sobre el HEAD de la PR.
+Esto habilita **CÓDIGO VALIDADO; INFRAESTRUCTURA PENDIENTE**, no producción.
 
-## Punto de continuación — 2026-09-16
+## Cierre y continuidad — 2026-09-16
 
-Candidato de código subido: `b641b1f7a42409d4a47d972001181b0b15223cce`, rama
-`codex/code-readiness`. Revisión independiente confirmada para ese SHA, sin
-bloqueadores accionables. Árbol limpio al revisar. Las 384 pruebas, instalación,
-lint, tipos, build y escaneo post-build aprobaron localmente; scanner: 292
-fuentes y 45 assets cliente.
+La conexión GitHub inicialmente rechazó crear PR con HTTP403. El usuario autorizó
+usar el navegador e inició su sesión personalmente; se creó la PR #1 sin merge.
 
-La conexión GitHub rechazó crear PR con HTTP403. Tras autorización explícita
-del usuario para usar el navegador e iniciar él su sesión, se creó la
-[PR #1](https://github.com/Strikedigital-daniver/virtual-office/pull/1).
+El [primer CI](https://github.com/Strikedigital-daniver/virtual-office/actions/runs/35143012344)
+aprobó calidad y legacy, pero detectó `psql: service file "" not found` antes de
+ejecutar SQL Spatial. El harness reintroducía PGSERVICE vacío; libpq lo interpreta
+como selección de servicio. Se corrigió omitiendo selectores completamente, con
+dos regresiones del entorno aislado. No se eliminaron tests ni se redujeron gates.
 
-[Primera ejecución CI](https://github.com/Strikedigital-daniver/virtual-office/actions/runs/35143012344):
-el job Spatial detectó `psql: service file "" not found` antes de ejecutar SQL.
-El harness eliminaba variables PG heredadas pero reintroducía PGSERVICE vacío:
-libpq lo interpreta como selección de servicio. Se corrige omitiendo selectores
-de servicio completamente, con dos regresiones del entorno aislado.
+El [CI corregido](https://github.com/Strikedigital-daniver/virtual-office/actions/runs/35143265892)
+aprobó quality, database y spatial-database para `0843ea0`. Los logs contienen
+386 pruebas de código, 32 pgTAP legacy y191 comprobaciones SQL Spatial.
+Los jobs PR prueban el merge sintético contra la base indicada, no despliegan.
 
-Siguiente acción: comprobar quality/database/spatial-database para el nuevo
-commit, corregir fallos y registrar el SHA con CI verde. No fusionar ni desplegar.
+No quedan bloqueadores de código conocidos en el alcance revisado. Continúan
+pendientes los cinco puntos externos/decisiones enumerados arriba. La siguiente
+fase requiere autorización para infraestructura y pruebas reales; no forma parte
+de esta ejecución. No se han enviado invitaciones ni modificado usuarios o datos
+reales, y la PR permanece sin fusionar.
