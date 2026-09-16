@@ -26,7 +26,14 @@ export const PublishTracksRequestSchema = z.object({
       }),
     )
     .min(1)
-    .max(2),
+    .max(2)
+    .refine(
+      (tracks) =>
+        new Set(tracks.map((track) => track.trackName)).size ===
+          tracks.length &&
+        new Set(tracks.map((track) => track.mid)).size === tracks.length,
+      "Published track names and mids must be unique",
+    ),
 });
 
 export const SubscribeTracksRequestSchema = z.object({
@@ -40,7 +47,16 @@ export const SubscribeTracksRequestSchema = z.object({
       }),
     )
     .min(1)
-    .max(14),
+    .max(14)
+    .refine(
+      (tracks) =>
+        new Set(
+          tracks.map((track) =>
+            JSON.stringify([track.sessionId, track.trackName]),
+          ),
+        ).size === tracks.length,
+      "Remote tracks must be unique",
+    ),
 });
 
 export const RenegotiateRequestSchema = z.object({
@@ -71,6 +87,8 @@ export const RealtimeResponseSchema = z
           sessionId: z.string().optional(),
           trackName: z.string().optional(),
           mid: z.string().optional(),
+          errorCode: z.string().optional(),
+          errorDescription: z.string().optional(),
         }),
       )
       .optional(),

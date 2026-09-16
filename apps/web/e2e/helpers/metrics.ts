@@ -149,7 +149,9 @@ async function measureAudioFromMixerTap(
       }
     }
     const peakFrequencyHz =
-      peakValue > 8 ? (peakIndex * tap.sampleRate) / tap.analyser.fftSize : null;
+      peakValue > 8
+        ? (peakIndex * tap.sampleRate) / tap.analyser.fftSize
+        : null;
     const rms = Math.sqrt(sumSquares / bins.length);
     return { peakFrequencyHz, rms, mixerGain: gain };
   }, remoteUserId);
@@ -266,10 +268,7 @@ export async function collectMediaEvidence(
       Math.abs(videoFrame1.dominantRgb.b - videoFrame2.dominantRgb.b) > 2 ||
       Math.abs(videoFrame1.variance - videoFrame2.variance) > 1);
 
-  const audioMetrics = await measureAudioFromMixerTap(
-    page,
-    input.remoteUserId,
-  );
+  const audioMetrics = await measureAudioFromMixerTap(page, input.remoteUserId);
 
   return {
     capturedAt: new Date().toISOString(),
@@ -322,7 +321,9 @@ export function evaluateAudioEvidence(
   }
   if (mixerAudible && bytesGrowing) return "PASS";
   if (bytesGrowing && (evidence.mixerGain ?? 0) <= 0.05) {
-    return evidence.audioRms !== null && evidence.audioRms <= 2 ? "PASS" : "FAIL";
+    return evidence.audioRms !== null && evidence.audioRms <= 2
+      ? "PASS"
+      : "FAIL";
   }
   return "FAIL";
 }

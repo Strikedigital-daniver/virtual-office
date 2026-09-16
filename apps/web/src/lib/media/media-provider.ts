@@ -1,5 +1,7 @@
 import type { MediaKind, PublishedTrack } from "@virtual-office/shared";
 
+export const MEDIA_REQUEST_TIMEOUT_MS = 15_000;
+
 export interface RemoteTrackRef {
   ownerUserId: string;
   sessionId: string;
@@ -11,6 +13,7 @@ export interface MediaProviderCallbacks {
   onRemoteTrack(ref: RemoteTrackRef, track: MediaStreamTrack): void;
   onRemoteTrackClosed(ref: RemoteTrackRef): void;
   onState(state: string): void;
+  onLocalTrackClosed?(kind: MediaKind): void;
 }
 
 /**

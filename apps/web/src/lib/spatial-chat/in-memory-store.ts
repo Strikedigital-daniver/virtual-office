@@ -11,6 +11,11 @@ import {
   type SpatialChatMessageRecord,
 } from "@virtual-office/shared";
 
+import {
+  assertSameMessageRetry,
+  ChatHistoryQuerySchema,
+} from "./message-integrity";
+
 interface StoredChannel {
   id: string;
   worldId: string;
@@ -165,6 +170,7 @@ export function getOrCreateEphemeralDirectChannel(input: {
 export async function listEphemeralChannelMessages(input: {
   channelId: string;
   cursorCreatedAt?: string;
+  cursorId?: string;
   limit?: number;
   displayNameFor: (userId: string) => Promise<string>;
 }): Promise<{
@@ -172,11 +178,19 @@ export async function listEphemeralChannelMessages(input: {
   nextCursor: { createdAt: string; id: string } | null;
 }> {
   const limit = input.limit ?? SPATIAL_CHAT_PAGE_SIZE;
+  const cursor = ChatHistoryQuerySchema.parse(input);
   const rows = [...(messagesByChannel.get(input.channelId) ?? [])].sort(
-    (left, right) => right.createdAt.localeCompare(left.createdAt),
+    (left, right) =>
+      right.createdAt.localeCompare(left.createdAt) ||
+      right.id.localeCompare(left.id),
   );
-  const filtered = input.cursorCreatedAt
-    ? rows.filter((row) => row.createdAt < input.cursorCreatedAt!)
+  const filtered = cursor.cursorCreatedAt
+    ? rows.filter(
+        (row) =>
+          row.createdAt < cursor.cursorCreatedAt! ||
+          (row.createdAt === cursor.cursorCreatedAt &&
+            row.id < cursor.cursorId!),
+      )
     : rows;
   const page = filtered.slice(0, limit);
   const displayNames = new Map<string, string>();
@@ -207,12 +221,18 @@ export function insertEphemeralChannelMessage(input: {
   const normalizedBody = normalizeChatBody(input.body);
   const existingRows = messagesByChannel.get(input.channelId) ?? [];
   if (input.clientMessageId) {
-    const existing = existingRows.find(
-      (row) =>
-        row.authorUserId === input.authorUserId &&
-        row.clientMessageId === input.clientMessageId,
-    );
+    const existing = [...messagesByChannel.values()]
+      .flat()
+      .find(
+        (row) =>
+          row.authorUserId === input.authorUserId &&
+          row.clientMessageId === input.clientMessageId,
+      );
     if (existing) {
+      assertSameMessageRetry(existing, {
+        channelId: input.channelId,
+        body: normalizedBody,
+      });
       return mapMessage(existing, input.authorDisplayName);
     }
   }

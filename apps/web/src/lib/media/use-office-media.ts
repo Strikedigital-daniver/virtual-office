@@ -33,6 +33,7 @@ import { CloudflareMediaProvider } from "./cloudflare-media-provider";
 import { captureLocalTrack, classifyMediaDeviceError } from "./local-media";
 import {
   remoteKey,
+  MEDIA_REQUEST_TIMEOUT_MS,
   type RemoteTrackRef,
   isCatalogRegistrationError,
   isMediaAuthorizationDenyError,
@@ -76,6 +77,7 @@ function trackRef(track: PublishedTrack): RemoteTrackRef {
 async function fetchTicket(officeSlug: string): Promise<Ticket> {
   const response = await fetch("/api/realtime-ticket", {
     method: "POST",
+    signal: AbortSignal.timeout(MEDIA_REQUEST_TIMEOUT_MS),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ officeSlug }),
   });
@@ -106,6 +108,7 @@ export function useOfficeMedia(options: {
   remotePositions: Map<string, WorldPosition>;
   broadcastSpeakerIds?: ReadonlySet<string>;
   onEvictCatalogTrack?: (ref: RemoteTrackRef) => void;
+  presenceConnected?: boolean;
 }) {
   const {
     officeSlug,
@@ -115,9 +118,12 @@ export function useOfficeMedia(options: {
     remotePositions,
     broadcastSpeakerIds = EMPTY_BROADCAST_SPEAKER_IDS,
     onEvictCatalogTrack,
+    presenceConnected = true,
   } = options;
   const onEvictCatalogTrackRef = useRef(onEvictCatalogTrack);
   onEvictCatalogTrackRef.current = onEvictCatalogTrack;
+  const nameForRef = useRef(nameFor);
+  nameForRef.current = nameFor;
   const providerRef = useRef<CloudflareMediaProvider | null>(null);
   const proximityRef = useRef(new ProximityMediaController());
   const selfUserIdRef = useRef<string | null>(null);
@@ -143,6 +149,9 @@ export function useOfficeMedia(options: {
     useState<SpatialAccessClass>("CLUB_MEMBER");
   const [proximityDebug, setProximityDebug] = useState<ProximityDebugRow[]>([]);
   const togglingRef = useRef(false);
+  const deviceStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const subscribeRetryAfterRef = useRef(new Map<string, number>());
   const subscribeInFlightRef = useRef(new Set<string>());
   const catalogResyncRef = useRef(false);
@@ -188,10 +197,13 @@ export function useOfficeMedia(options: {
   }, [officeSlug]);
 
   useEffect(() => {
+    if (!presenceConnected) return;
     let cancelled = false;
     let provider: CloudflareMediaProvider | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
 
-    void (async () => {
+    const connectMedia = async () => {
       try {
         const first = await fetchTicket(officeSlug);
         if (cancelled) return;
@@ -203,6 +215,7 @@ export function useOfficeMedia(options: {
           first.userId,
           {
             onRemoteTrack: (ref, track) => {
+              if (cancelled) return;
               mixerRef.current.ensurePlayback();
               const stream = new MediaStream([track]);
               const factors = proximityFactorsRef.current.get(ref.ownerUserId);
@@ -217,7 +230,7 @@ export function useOfficeMedia(options: {
                   key: remoteKey(ref),
                   ref,
                   stream,
-                  displayName: nameFor(ref.ownerUserId),
+                  displayName: nameForRef.current(ref.ownerUserId),
                   audioGain: effectiveAudioGain({
                     remoteMicPublished: true,
                     subscribed,
@@ -234,6 +247,7 @@ export function useOfficeMedia(options: {
               ]);
             },
             onRemoteTrackClosed: (ref) => {
+              if (cancelled) return;
               activeRemoteKeysRef.current.delete(remoteKey(ref));
               setRemotes((current) =>
                 current.filter((item) => item.key !== remoteKey(ref)),
@@ -241,6 +255,14 @@ export function useOfficeMedia(options: {
             },
             onState: (label) => {
               mediaDiagnosticsRef.current.peerState(label, label);
+            },
+            onLocalTrackClosed: (kind) => {
+              if (cancelled) return;
+              if (kind === "audio") setMicStatus("off");
+              else {
+                setCameraStatus("off");
+                setLocalPreview(null);
+              }
             },
           },
           mediaDiagnosticsRef.current,
@@ -251,25 +273,46 @@ export function useOfficeMedia(options: {
           return;
         }
         providerRef.current = provider;
+        setError(null);
         setReady(true);
       } catch (error) {
         mediaDiagnosticsRef.current.log(
           `connect:error ${error instanceof Error ? error.message : String(error)}`,
         );
-        if (!cancelled) setError("La sesión de medios no está disponible.");
+        await provider?.disconnect();
+        provider = null;
+        if (!cancelled) {
+          setError("La sesión de medios no está disponible. Reintentando…");
+          retryTimer = setTimeout(
+            () => void connectMedia(),
+            Math.min(30_000, 1_000 * 2 ** Math.min(failures++, 5)),
+          );
+        }
       }
-    })();
+    };
+    void connectMedia();
 
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
       const active = providerRef.current ?? provider;
       providerRef.current = null;
+      if (deviceStatusTimerRef.current)
+        clearTimeout(deviceStatusTimerRef.current);
+      setReady(false);
+      setMicStatus("off");
+      setCameraStatus("off");
+      setLocalPreview(null);
+      setRemotes([]);
+      activeRemoteKeysRef.current.clear();
+      subscribeRetryAfterRef.current.clear();
+      subscribeInFlightRef.current.clear();
       proximityRef.current.reset();
       mixerRef.current.dispose();
       mixerRef.current = new SpatialAudioMixer();
       void active?.disconnect();
     };
-  }, [officeSlug, ticketSource, nameFor]);
+  }, [officeSlug, ticketSource, presenceConnected]);
 
   useEffect(() => {
     const provider = providerRef.current;
@@ -311,7 +354,7 @@ export function useOfficeMedia(options: {
 
   useEffect(() => {
     const provider = providerRef.current;
-    if (!provider || !ready || !localPosition) return;
+    if (!provider || !ready) return;
 
     const snapshots = proximityRef.current.evaluate(
       localPosition,
@@ -350,19 +393,13 @@ export function useOfficeMedia(options: {
       tracksByUser.set(track.ownerUserId, bucket);
     }
 
-    const boundRefs: RemoteTrackRef[] = [];
-    for (const key of activeRemoteKeysRef.current) {
-      const remote = remotesRef.current.find((item) => item.key === key);
-      if (remote) boundRefs.push(remote.ref);
-    }
+    const boundRefs = provider.remoteRefs();
     for (const staleRef of findStaleRemoteRefs(boundRefs, availableTracks)) {
-      if (provider.isRemoteBound(staleRef)) {
-        void provider.unsubscribe(staleRef).catch((error) => {
-          mediaDiagnosticsRef.current.log(
-            `stale-unsubscribe:error ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
-      }
+      void provider.unsubscribe(staleRef).catch((error) => {
+        mediaDiagnosticsRef.current.log(
+          `stale-unsubscribe:error ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     }
 
     const desiredAudioUsers = new Set<string>();
@@ -397,7 +434,7 @@ export function useOfficeMedia(options: {
             if (Date.now() < retryAfter) continue;
             refsToSubscribe.push(ref);
           }
-        } else if (track.kind === "video" && provider.isRemoteBound(ref)) {
+        } else if (provider.isRemoteBound(ref)) {
           void provider.unsubscribe(ref).catch((error) => {
             mediaDiagnosticsRef.current.log(
               `unsubscribe:error ${error instanceof Error ? error.message : String(error)}`,
@@ -594,7 +631,11 @@ export function useOfficeMedia(options: {
       const provider = providerRef.current as {
         repairSendTransportIfNeeded?: () => Promise<void>;
       } | null;
-      void provider?.repairSendTransportIfNeeded?.();
+      void provider?.repairSendTransportIfNeeded?.().catch((error) => {
+        setLastMediaError(
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     }, 5_000);
     return () => window.clearInterval(timer);
   }, [micStatus, cameraStatus]);
@@ -718,6 +759,8 @@ export function useOfficeMedia(options: {
   const toggle = useCallback(async (kind: MediaKind, deviceId?: string) => {
     const provider = providerRef.current;
     if (!provider || togglingRef.current) return;
+    if (deviceStatusTimerRef.current)
+      clearTimeout(deviceStatusTimerRef.current);
     togglingRef.current = true;
     bootstrapMixerPlaybackRef.current();
     const setStatus = kind === "audio" ? setMicStatus : setCameraStatus;
@@ -740,15 +783,23 @@ export function useOfficeMedia(options: {
       let track: MediaStreamTrack | null = null;
       try {
         track = await captureLocalTrack(kind, deviceId);
+        if (providerRef.current !== provider) {
+          track.stop();
+          return;
+        }
         if (kind === "video") setLocalPreview(new MediaStream([track]));
-        setStatus("on");
         await provider.publish(kind, track);
+        if (providerRef.current === provider) setStatus("on");
       } catch (cause) {
         if (track && track.readyState === "live") track.stop();
+        if (providerRef.current !== provider) return;
         if (kind === "video") setLocalPreview(null);
         setStatus("failed");
         setError(classifyMediaDeviceError(cause));
-        setTimeout(() => setStatus("off"), 2_500);
+        deviceStatusTimerRef.current = setTimeout(
+          () => setStatus("off"),
+          2_500,
+        );
       }
     } finally {
       togglingRef.current = false;

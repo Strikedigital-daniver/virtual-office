@@ -15,8 +15,10 @@
     "dev:supabase": "supabase start",
     "lint": "npm run lint --workspaces --if-present && prettier --check \"apps/**/*.{ts,tsx,js,json,jsonc,css}\" \"packages/**/*.{ts,json}\" \"scripts/**/*.mjs\" package.json README.md eslint.config.mjs tsconfig.base.json docs/SPRINT_1_PLAN.md docs/adr/ADR-008-next-16-edge-middleware-opennext-compatibility.md docs/runbooks/sprint-1-local-and-staging.md",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && npm run test:scripts",
+    "test:scripts": "node --test scripts/test/check-secrets.test.mjs scripts/test/spatial-test-environment.test.mjs",
     "test:integration": "supabase test db",
+    "test:spatial-sql": "node scripts/test-spatial-sql.mjs",
     "test:e2e": "npm run test:e2e --workspace @virtual-office/web",
     "test:media-e2e": "npm run test:media-e2e --workspace @virtual-office/web",
     "test:media-e2e:smoke": "npm run test:media-e2e:smoke --workspace @virtual-office/web",
@@ -34,7 +36,10 @@
     "supabase": "^2.114.0",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.0.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "sharp": "^0.35.4"
   },
   "engines": {
     "node": ">=24.0.0"

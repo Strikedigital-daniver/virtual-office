@@ -150,7 +150,7 @@ export function ProximityAudioPlayback({
 }) {
   if (!enabled) return null;
   const audios = remotes.filter((media) => {
-    if (media.ref.kind !== "audio") return false;
+    if (media.ref.kind !== "audio" || !media.subscribed) return false;
     const track = media.stream.getAudioTracks()[0];
     return Boolean(track && track.readyState === "live");
   });

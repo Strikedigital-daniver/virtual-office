@@ -1,47 +1,55 @@
-# Oficina virtual privada
+# Recuerda Spatial — Temple
 
-Oficina social pixelada tipo Gather para un grupo privado de siete personas.
-Monorepo del MVP descrito en `docs/MASTER_SPEC.md`.
+Mundo social pixelado integrado con Recuerda Club. Temple es el mundo; Office
+es una zona con acceso restringido. La oficina privada original y sus sprints
+son antecedentes, no evidencia de preparación para producción.
 
-**¿Te acabas de sumar al proyecto? Empieza por `docs/HANDOFF.md`.**
+Empieza por `docs/HANDOFF.md`. El estado comprobado y sus límites se registran
+en `docs/CODE_READINESS.md`.
 
 ## Estructura
 
-- `apps/web`: shell PWA, autenticación, panel de administración y mundo Phaser.
-- `apps/realtime-worker`: Worker con el Durable Object `OfficeRoom`; presencia,
-  movimiento, zonas y switchboard autorizado de Cloudflare Realtime SFU.
-- `packages/shared`: contratos Zod, mapa de la oficina y tickets HMAC.
-- `supabase`: configuración local, migraciones y pruebas RLS.
-- `spikes/sprint-0`: prueba técnica aprobada de Durable Objects y SFU. Aislada
-  del producto.
+- `apps/web`: Next.js, sesión del Club, PWA, Phaser, chat y controles de medios.
+- `apps/realtime-worker`: Durable Object `OfficeRoom`; presencia, movimiento,
+  autorización y Cloudflare Realtime SFU.
+- `packages/shared`: contratos, mapa, reglas de acceso y tickets HMAC.
+- `spatial/sql`: SQL incremental de Spatial; no contiene el esquema del Club.
+- `spatial/tests`: contratos SQL sobre una base PostgreSQL desechable.
+- `supabase`: esquema y pruebas de la oficina privada **legacy**. No aplicar
+  estas migraciones al proyecto Club.
+- `spikes/sprint-0`: prueba técnica histórica, aislada del producto.
 
-## Desarrollo
+## Desarrollo y validación
 
-1. `npm install` (Node 24 o superior).
-2. Crea `apps/web/.env.local` con las claves de Supabase y el secreto de
-   tickets. Sin ese archivo el navegador se queda sin configuración y el login
-   no avanza: las variables `NEXT_PUBLIC_*` se incrustan al compilar.
-3. `npm run dev:web`, `npm run dev:worker` y, con Docker, `npm run dev:supabase`.
-
-El acceso es privado: los usuarios los crea un administrador desde
-`/admin/members` (ADR-010). En Supabase permanece deshabilitado el registro
-público y el navegador nunca recibe `SUPABASE_SECRET_KEY` ni el secreto de
-Cloudflare Realtime.
-
-## Verificación
+Requiere Node 24 y npm. Usa `npm ci` para reproducir el lockfile. Copia los
+nombres de variables de `apps/web/.env.example` a un archivo local ignorado;
+para conectar servicios necesitas autorización y configuración del entorno.
+Las variables `NEXT_PUBLIC_*` quedan incrustadas al compilar: no son secretos.
 
 ```text
+npm run dev:web
+npm run dev:worker
 npm run verify
+npm audit --audit-level=high
 ```
 
-Ejecuta lint, typecheck, pruebas, build y escaneo de secretos. El CI de GitHub
-corre lo mismo y además las pruebas pgTAP de RLS sobre Supabase local.
+`verify` ejecuta formato, lint, tipos, pruebas, compilación y escaneo básico de
+secretos. CI añade instalación limpia, auditoría de dependencias y dos bases
+aisladas: pgTAP legacy en Supabase local y SQL Spatial en PostgreSQL 17. Ver
+`spatial/tests/README.md` para ejecutar la segunda suite. Ninguna valida el
+esquema real del Club ni una conversación real SFU.
+
+La aplicación usa la identidad existente del Club. Las rutas legacy para crear
+usuarios/invitaciones están retiradas; `/admin/members` no es el procedimiento
+de alta vigente. El acceso staff todavía usa un puente temporal de correos,
+pendiente del contrato canónico de roles del Club.
 
 ## Documentación
 
-- `docs/MASTER_SPEC.md`: contrato de producto y arquitectura.
-- `docs/HANDOFF.md`: guía de entrada para quien continúa el proyecto.
-- `docs/adr/`: decisiones que se apartan del documento maestro y por qué.
-- `docs/SPRINT_*_PLAN.md` y `docs/SPRINT_*_REPORT.md`: alcance y evidencia por
-  sprint.
-- `docs/runbooks/`: procedimientos de entorno local y despliegue a staging.
+- `docs/MASTER_SPEC.md` y `docs/adr/`: arquitectura y decisiones aprobadas.
+- `docs/RECUERDA_CLUB_SPATIAL_INTEGRATION_PLAN.md`: autoridad de identidad,
+  separación Temple/Office y límites de integración.
+- `docs/CODE_READINESS.md`: evidencia del candidato y bloqueos externos.
+- `docs/runbooks/spatial-candidate-validation.md`: pasos pendientes de validación
+  y despliegue autorizado; no se ejecutan por compilar o aprobar CI.
+- `docs/SPRINT_*`: historia. Sus resultados pertenecen a sus versiones originales.

@@ -1,11 +1,9 @@
 import {
   DEFAULT_AVATAR_APPEARANCE,
-  HEARTBEAT_INTERVAL_MS,
   INTERPOLATION_DELAY_MS,
   MOVE_SEND_HZ,
   OFFICE_MAP,
   PLAYER_SPEED_PX_PER_S,
-  ServerEventSchema,
   TILE_SIZE,
   mapPixelSize,
   nearestDesk,
@@ -30,11 +28,13 @@ import {
 import { createAvatarSprite, syncAvatarSprite } from "./avatar-sprite";
 import { isTypingTarget } from "./keyboard-guard";
 import { pushSample, sampleAt, type TimedPosition } from "./interpolation";
+import { startPresenceConnection } from "./presence-connection";
 
 export interface OfficeGameOptions {
   container: HTMLElement;
   officeSlug: string;
   onStatus: (status: string) => void;
+  onPresenceConnected?: (connected: boolean) => void;
   onTracks?: (tracks: PublishedTrack[]) => void;
   onPlayers?: (
     players: {
@@ -108,11 +108,9 @@ export async function createOfficeGame(
   const { width: mapWidth, height: mapHeight } = mapPixelSize(OFFICE_MAP);
 
   let socket: WebSocket | null = null;
-  let destroyed = false;
   let selfUserId: string | null = null;
   let seq = 0;
-  let reconnectDelay = 1_000;
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let stopPresence: (() => void) | null = null;
   const remotes = new Map<string, RemotePlayer>();
 
   let sceneRef: PhaserNamespace.Scene | null = null;
@@ -304,6 +302,7 @@ export async function createOfficeGame(
           tracks.set(trackKeyOf(track), track);
         }
         options.onStatus("Conectado");
+        options.onPresenceConnected?.(true);
         publishTracks();
         publishPlayers();
         refreshLabels();
@@ -451,59 +450,6 @@ export async function createOfficeGame(
         clientTime: Date.now(),
       }),
     );
-  }
-
-  async function connect(): Promise<void> {
-    if (destroyed) return;
-    options.onStatus("Conectando…");
-    let ticket: { ticket: string; url: string };
-    try {
-      const response = await fetch("/api/realtime-ticket", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ officeSlug: options.officeSlug }),
-      });
-      if (!response.ok) throw new Error(`ticket ${response.status}`);
-      ticket = (await response.json()) as { ticket: string; url: string };
-    } catch {
-      scheduleReconnect();
-      return;
-    }
-    if (destroyed) return;
-
-    const ws = new WebSocket(
-      `${ticket.url}?ticket=${encodeURIComponent(ticket.ticket)}`,
-    );
-    socket = ws;
-    ws.onopen = () => {
-      reconnectDelay = 1_000;
-      sendAppearance();
-    };
-    ws.onmessage = (message) => {
-      if (typeof message.data !== "string") return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(message.data) as unknown;
-      } catch {
-        return;
-      }
-      const result = ServerEventSchema.safeParse(parsed);
-      if (result.success) handleServerEvent(result.data);
-    };
-    ws.onclose = () => {
-      if (socket === ws) socket = null;
-      scheduleReconnect();
-    };
-  }
-
-  function scheduleReconnect(): void {
-    if (destroyed) return;
-    options.onStatus("Reconectando…");
-    const delay = reconnectDelay;
-    reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
-    setTimeout(() => {
-      if (!destroyed && !socket) void connect();
-    }, delay);
   }
 
   function sendAppearance(): void {
@@ -673,12 +619,29 @@ export async function createOfficeGame(
         callback: () => sendMove(),
       });
 
-      void connect();
-      heartbeat = setInterval(() => {
-        if (socket?.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
-        }
-      }, HEARTBEAT_INTERVAL_MS);
+      stopPresence = startPresenceConnection({
+        officeSlug: options.officeSlug,
+        onSocket: (value) => {
+          socket = value;
+        },
+        onOpen: sendAppearance,
+        onEvent: handleServerEvent,
+        onStatus: options.onStatus,
+        onDisconnect: () => {
+          selfUserId = null;
+          selfCurrentDeskId = null;
+          selfBroadcastSource = null;
+          selfInBroadcastZone = false;
+          selfBroadcastCapacityBlocked = false;
+          tracks.clear();
+          clearRemotes();
+          publishTracks();
+          publishPlayers();
+          publishBroadcastState();
+          options.onPositions?.(new Map(), null);
+          options.onPresenceConnected?.(false);
+        },
+      });
     }
 
     override update(): void {
@@ -822,12 +785,9 @@ export async function createOfficeGame(
 
   return {
     destroy: () => {
-      destroyed = true;
       options.container.removeEventListener("wheel", onWheel);
       resizeObserver.disconnect();
-      if (heartbeat) clearInterval(heartbeat);
-      socket?.close(1000, "leaving");
-      socket = null;
+      stopPresence?.();
       clearRemotes();
       sceneRef = null;
       game.destroy(true);

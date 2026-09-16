@@ -47,6 +47,7 @@ export function OfficeWorld({ officeSlug }: OfficeWorldProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<OfficeGameHandle | null>(null);
   const [status, setStatus] = useState("Cargando mundo…");
+  const [presenceConnected, setPresenceConnected] = useState(false);
   const [deskState, setDeskState] = useState<{
     currentDeskId: string | null;
     nearestDeskId: string | null;
@@ -131,6 +132,7 @@ export function OfficeWorld({ officeSlug }: OfficeWorldProps) {
 
   const media = useOfficeMedia({
     officeSlug,
+    presenceConnected,
     availableTracks: tracks,
     nameFor,
     localPosition,
@@ -196,6 +198,9 @@ export function OfficeWorld({ officeSlug }: OfficeWorldProps) {
         initialAppearance: appearance,
         onStatus: (value) => {
           if (!cancelled) setStatus(value);
+        },
+        onPresenceConnected: (connected) => {
+          if (!cancelled) setPresenceConnected(connected);
         },
         onTracks: (value) => {
           if (!cancelled) setTracks(value);

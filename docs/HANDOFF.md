@@ -1,122 +1,78 @@
-# Traspaso del proyecto — cómo continuar
+# Traspaso — Recuerda Spatial
 
-Guía de entrada para una persona que se suma a construir la Oficina Virtual
-Privada. Léela completa antes de escribir código.
+## Fuente de verdad
 
-## 1. La regla más importante
+Leer el documento maestro, los ADR y la integración con Recuerda Club antes de
+cambiar arquitectura. El código actual incorpora Temple, Office, proximidad,
+chat, avatares y grants; la numeración de sprints antigua no indica qué está
+validado. Consultar `CODE_READINESS.md` para evidencia del candidato.
 
-`docs/MASTER_SPEC.md` es el contrato del proyecto: stack, alcance y reglas de
-privacidad. **No se cambia el stack ni el alcance sin escribir un ADR y que el
-owner lo apruebe.** Los ADR viven en `docs/adr/` y hay que leerlos: explican por
-qué varias cosas no son como el documento maestro las describía originalmente.
+Se mantienen Next.js, Phaser, Supabase, Durable Objects y Cloudflare Realtime.
+Posiciones y medios no se guardan en Postgres. Los permisos se verifican en el
+servidor. Cámara/micrófono siempre se activan manualmente y apagarlos detiene
+las pistas. No hay grabación.
 
-Prohibiciones vigentes (sección 1.2 del documento maestro):
+## Identidad y datos
 
-- No cambiar Next.js, Phaser, Supabase, Durable Objects ni Cloudflare Realtime.
-- No introducir pnpm, Turborepo, Electron, LiveKit, Firebase ni Redis.
-- No guardar posiciones de jugadores en Postgres ni consultar Supabase por
-  cada movimiento.
-- No exponer secretos de Cloudflare ni la clave `service_role` al navegador.
-- No activar cámara o micrófono automáticamente por proximidad.
+- Club es la autoridad de autenticación y membresía. El proveedor actual lee
+  `profiles`, `entitlements` y las tablas Spatial; esas consultas describen un
+  contrato esperado, no una auditoría del esquema desplegado.
+- Temple es el mundo; `officeId` en los tickets conserva su nombre histórico
+  pero contiene el UUID del mundo. Office es una zona, no otro mundo/tenant.
+- `CLUB_MEMBER`, `OFFICE_COLLABORATOR` y `RECUERDA_STAFF` tienen reglas distintas.
+  Los colaboradores se obtienen de grants con mundo, tipo y vencimiento.
+- Staff usa `temporary-compatibility-bridge.ts`: lista runtime
+  `UNLOCK_ADMIN_EMAILS` más un valor por defecto heredado. No sustituirla por
+  una tabla o rol inventado. Hace falta el contrato oficial del Club y probar
+  altas, bajas, correo verificado y revocación antes de producción.
+- Las rutas legacy de provisión responden 410. No crear usuarios/invitaciones
+  mediante la administración antigua.
 
-## 2. Puesta en marcha
+`spatial/sql` contiene cambios incrementales candidatos del módulo. Nunca
+ejecutar `supabase/migrations` contra Club: corresponden al producto legacy.
+No modificar migraciones ya aplicadas; crear una nueva. La fixture SQL de CI
+no incluye ni intenta reconstruir el esquema del Club.
 
-Requisitos: Node 24 o superior y npm 10+. Docker sólo si quieres correr las
-pruebas de base de datos en local (el CI ya las corre por ti).
+## Desarrollo sin servicios reales
 
-```bash
-git clone https://github.com/Strikedigital-daniver/virtual-office.git
-cd virtual-office
-npm install
-```
+Node 24, npm y `npm ci`. Las pruebas unitarias/simuladas no requieren credenciales.
+`npm run verify` ejecuta lint/formato, tipos, tests, build y escaneo básico de
+secretos; `npm audit --audit-level=high` comprueba dependencias. El build es
+local (los Workers se empaquetan con dry-run), no un despliegue.
 
-Crea `apps/web/.env.local` con los valores que te pase el owner:
+Para las pruebas SQL Spatial, usar PostgreSQL desechable y seguir
+`../spatial/tests/README.md`. Las pruebas legacy necesitan Docker/Supabase
+local. CI ejecuta ambas por separado; una suite legacy verde no demuestra
+compatibilidad Spatial/Club.
 
-```
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
-NEXT_PUBLIC_REALTIME_WS_URL=
-NEXT_PUBLIC_APP_ENV=staging
-SUPABASE_SECRET_KEY=
-REALTIME_TICKET_SIGNING_SECRET=
-```
+Los nombres de variables están en `apps/web/.env.example` y la configuración
+del Worker. No versionar valores privados. `NEXT_PUBLIC_*` se incluye en el
+cliente durante build; una compilación con placeholders no sirve para desplegar.
+Sin configuración, login muestra un error recuperable. En desarrollo el chat
+puede ser efímero; eso no demuestra persistencia.
 
-**Aviso importante de build:** las variables `NEXT_PUBLIC_*` se incrustan
-durante la compilación. Si `.env.local` falta o está incompleto, la aplicación
-compila igual pero el navegador se queda sin configuración y el login se cuelga
-en "Entrando…". Ese archivo está en `.gitignore` y nunca se sube.
+## Presencia y medios
 
-Levantar el entorno:
+La web revalida acceso y emite tickets HMAC de dos minutos. La presencia
+renueva su ticket cada minuto; al perder presencia se descartan posiciones,
+catálogo y dispositivos activos. Una segunda pestaña reemplaza la primera sin
+que ambas entren en reconexión infinita. Recuperar presencia no enciende el
+micrófono ni la cámara de nuevo.
 
-```bash
-npm run dev:web       # Next.js en localhost:3000
-npm run dev:worker    # Worker de presencia y medios
-npm run dev:supabase  # Supabase local, requiere Docker
-```
+El Worker debe comprobar acceso vigente y propiedad de sesión para cada
+operación SFU. La autorización no puede depender de volumen cero u ocultar un
+video en el navegador. Las pruebas simuladas de negociación/revocación no
+demuestran cierre efectivo en el SFU real: verificarlo en staging autorizado.
 
-Antes de cualquier commit:
+## Entrega y pendientes
 
-```bash
-npm run verify        # lint, typecheck, pruebas, build y escaneo de secretos
-```
+Ramas `codex/`, PR contra `main`, sin fusionar ni desplegar automáticamente.
+Usar `runbooks/spatial-candidate-validation.md` para validación externa,
+plan de despliegue y rollback. Solicitar autorización separada para servicios.
 
-## 3. Cómo está armado
-
-| Pieza                  | Dueña de                                                          | Nunca debe                                              |
-| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------- |
-| `apps/web`             | Interfaz, sesión, rutas seguras, shell PWA                        | Transportar medios ni sincronizar a 30 FPS              |
-| `apps/realtime-worker` | Durable Object `OfficeRoom`: presencia, zonas, permisos de pistas | Consultar Postgres; no tiene conexión a Supabase        |
-| `packages/shared`      | Contratos Zod, mapa de la oficina, tickets HMAC                   | Importar APIs del DOM sin cuidado: lo consume el Worker |
-| `supabase`             | Identidad, membresías, RLS                                        | Guardar posiciones o medios                             |
-| `spikes/sprint-0`      | Prueba técnica histórica, aislada                                 | Tocarse; ya cumplió su función                          |
-
-Flujo de una sesión: la web valida sesión y membresía en Supabase y firma un
-**ticket HMAC de 120 segundos**; el navegador abre el WebSocket contra el Worker
-con ese ticket y llama con él a la API de medios. El Worker es el único que
-conoce el secreto de Cloudflare Realtime.
-
-## 4. Estado actual
-
-- **Sprint 0** — Prueba técnica aprobada (Durable Objects + SFU, audio real).
-- **Sprint 1** — Monorepo, CI, Supabase con RLS, PWA. Login final por usuario y
-  contraseña (ADR-010), no por correo.
-- **Sprint 2** — Mundo multijugador: mapa, colisiones, movimiento a 8 Hz
-  validado en servidor, interpolación remota, zonas derivadas en el Worker.
-- **Sprint 3** — Audio y video: `MediaProvider` con adaptador Cloudflare,
-  micrófono y cámara manuales, hard mute, videos en HTML fuera de Phaser.
-  Falta cargar `CLOUDFLARE_REALTIME_APP_ID` y `CLOUDFLARE_REALTIME_APP_SECRET`
-  como secretos del Worker para activarlo.
-- **Sprint 4 (siguiente)** — Proximidad y salas: conjuntos audible/visible,
-  atenuación por distancia con Web Audio, histéresis, sala de reunión y zona de
-  foco. El punto de autorización ya existe en `OfficeRoom.subscribeTracks`:
-  hoy exige membresía y pista registrada; ahí hay que añadir zona y distancia.
-
-## 5. Flujo de trabajo
-
-1. Rama por cambio: `git checkout -b sprint/4-proximidad`.
-2. Antes de editar, escribe qué vas a tocar, qué migraciones hacen falta y qué
-   pruebas cubrirán el cambio.
-3. `npm run verify` en verde antes de subir. El CI corre lo mismo más las
-   pruebas pgTAP de RLS en Linux.
-4. Pull request contra `main`. No fusiones sin revisión.
-5. Migraciones SQL: se versionan en `supabase/migrations` y **nunca se editan
-   después de aplicarse**; se corrige con una migración nueva.
-
-## 6. Lo que sólo el owner puede dar
-
-- Acceso al repositorio en GitHub.
-- Valores de `.env.local` (claves de Supabase y secreto de tickets).
-- Acceso a la cuenta de Cloudflare si va a desplegar, o alguien despliega por él.
-- Las credenciales de Cloudflare Realtime, que Cloudflare no permite volver a
-  leer una vez guardadas.
-
-## 7. Trampas conocidas
-
-- **Supabase gratuito se pausa** tras ~1 semana sin uso. Si staging falla de
-  golpe, revisa el panel y reanuda el proyecto.
-- **El lockfile es delicado**: hubo conflictos entre npm 10 y npm 11 por
-  `esbuild`. Si regeneras `package-lock.json`, valida con `npm ci` antes de
-  subir; `apps/web` declara `esbuild` explícitamente por esa razón.
-- **Pruebas con dos clientes en el navegador**: Chrome congela las pestañas en
-  segundo plano y Phaser pausa su bucle cuando la pestaña no está visible. Para
-  probar dos usuarios hay que tener ambas ventanas a la vista.
+Faltan confirmar contrato staff/Club, reglas y SQL realmente desplegados,
+secretos/orígenes/URLs de Workers, audio real con tres personas y redes distintas,
+recuperación bajo fallos, instalación/actualización PWA y capacidad objetivo.
+El grupo original de siete personas y la cohorte del Club no definen por sí
+solos concurrencia simultánea. No cambiar límites o curva de proximidad sin
+decisión explícita de producto.

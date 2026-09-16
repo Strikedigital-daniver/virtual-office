@@ -197,6 +197,40 @@ describe("ClubSpatialEntitlementProvider", () => {
       templeWorldId: TEMPLE_WORLD_ID,
       accessClass: "CLUB_MEMBER",
     });
+    const profileQuery = supabase.from.mock.results.find(
+      (_, index) => supabase.from.mock.calls[index]?.[0] === "profiles",
+    )!.value;
+    expect(profileQuery.eq).toHaveBeenCalledWith("auth_user_id", "auth-user-1");
+    const entitlementQuery = supabase.from.mock.results.find(
+      (_, index) => supabase.from.mock.calls[index]?.[0] === "entitlements",
+    )!.value;
+    expect(entitlementQuery.eq).toHaveBeenCalledWith(
+      "profile_source_id",
+      "wp-42",
+    );
+  });
+
+  it("keeps the existing Club precedence for mixed paid membership and Office grants until capabilities are resolved", async () => {
+    const supabase = createMockSupabase({
+      userId: "auth-user-mixed",
+      profile: { source_id: "wp-mixed", display_name: "Miembro" },
+      clubAccessActive: true,
+      officeCollaboratorGrant: true,
+    });
+    await expect(
+      provider.getSpatialEntitlements(supabase as never),
+    ).resolves.toMatchObject({ accessClass: "CLUB_MEMBER" });
+  });
+
+  it("bounds the display name to the signed ticket and presence protocol", async () => {
+    const supabase = createMockSupabase({
+      userId: "auth-user-long-name",
+      profile: { source_id: "wp-long-name", display_name: "A".repeat(80) },
+      clubAccessActive: true,
+    });
+    await expect(
+      provider.getSpatialEntitlements(supabase as never),
+    ).resolves.toMatchObject({ displayName: "A".repeat(40) });
   });
 
   it("C. denies users without club_access or staff authority", async () => {

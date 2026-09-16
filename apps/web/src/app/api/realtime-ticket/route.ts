@@ -2,6 +2,7 @@ import {
   TEMPLE_WORLD_SLUG,
   TicketRequestSchema,
   issueRealtimeTicket,
+  REALTIME_TICKET_TTL_MS,
 } from "@virtual-office/shared";
 import { NextResponse, type NextRequest } from "next/server";
 
@@ -61,6 +62,7 @@ export async function POST(request: NextRequest) {
 
   // Protocol compatibility debt: ticket claim field is officeId; value is world UUID.
   const worldId = entitlements.templeWorldId;
+  const issuedAt = Date.now();
   const ticket = await issueRealtimeTicket(
     {
       userId: entitlements.authUserId,
@@ -69,12 +71,15 @@ export async function POST(request: NextRequest) {
       accessClass: entitlements.accessClass,
     },
     signingSecret,
+    issuedAt,
   );
 
   const httpBase = environment.realtimeWebSocketUrl.replace(/\/$/u, "");
   const wsBase = httpBase.replace(/^http/u, "ws");
   const response = NextResponse.json({
     ticket,
+    issuedAt,
+    expiresAt: issuedAt + REALTIME_TICKET_TTL_MS,
     url: `${wsBase}/office/${worldId}/connect`,
     mediaBaseUrl: `${httpBase}/office/${worldId}/media`,
     userId: entitlements.authUserId,
