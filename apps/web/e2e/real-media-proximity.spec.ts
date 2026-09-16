@@ -394,7 +394,11 @@ test.describe.serial("Virtual Office real media (staging)", () => {
       // Escenario 4 — re-acercar (×1 dentro del presupuesto de 5 min).
       const recoveryResults: ScenarioResult["directions"] = [];
       const recoveryEvidence: MediaEvidence[] = [];
-      for (let attempt = 1; attempt <= E2E_TIMING.recoveryAttempts; attempt += 1) {
+      for (
+        let attempt = 1;
+        attempt <= E2E_TIMING.recoveryAttempts;
+        attempt += 1
+      ) {
         await moveUntilDistance(
           sessionA.page,
           { max: NEAR_MAX_DISTANCE },
@@ -566,7 +570,9 @@ test.describe.serial("Virtual Office real media (staging)", () => {
             direction: "A→B",
             medium: "audio",
             verdict:
-              recoveredPlayback.audio === "PASS" ? "PASS" : recoveredPlayback.audio,
+              recoveredPlayback.audio === "PASS"
+                ? "PASS"
+                : recoveredPlayback.audio,
             notes: `pre=${blockedPlayback.notes.audio}; post=${recoveredPlayback.notes.audio}`,
           },
         ],

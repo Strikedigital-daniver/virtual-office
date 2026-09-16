@@ -39,6 +39,8 @@ import type { Env } from "./env";
 
 interface ConnectionAttachment extends PlayerState {
   connectionId: string;
+  officeId: string;
+  authorizedUntil: number;
   joinedAt: number;
   lastMoveAt: number;
   lastChatAt?: number;
@@ -49,12 +51,22 @@ interface ConnectionAttachment extends PlayerState {
 
 interface MediaSessionRecord {
   userId: string;
+  connectionId: string;
   sessionId: string;
   createdAt: number;
 }
 
 interface StoredTrack extends PublishedTrack {
   storageVersion: 1;
+}
+
+interface StoredSubscription {
+  subscriberUserId: string;
+  publisherUserId: string;
+  sessionId: string;
+  mid: string;
+  publisherSessionId: string;
+  trackName: string;
 }
 
 const OFFICE_PATH = /^\/office\/([0-9a-f-]{36})\/connect$/u;
@@ -64,6 +76,7 @@ const INTERNAL_CHAT_PATH =
 const SESSION_PREFIX = "media-session:";
 const TRACK_PREFIX = "published-track:";
 const MID_PREFIX = "published-mid:";
+const SUBSCRIPTION_PREFIX = "media-subscription:";
 const BOUNDS_MARGIN = TILE_SIZE / 2;
 const SPEED_TOLERANCE_PX = 16;
 
@@ -83,6 +96,16 @@ function attachmentOf(webSocket: WebSocket): ConnectionAttachment | null {
   const value = webSocket.deserializeAttachment() as unknown;
   if (!value || typeof value !== "object") return null;
   return value as ConnectionAttachment;
+}
+
+function isActiveConnection(
+  webSocket: WebSocket,
+  attachment: ConnectionAttachment,
+): boolean {
+  return (
+    webSocket.readyState === WebSocket.OPEN &&
+    attachment.authorizedUntil > Date.now()
+  );
 }
 
 function playerOf(
@@ -140,6 +163,60 @@ function errorResponse(
 }
 
 export class OfficeRoom extends DurableObject<Env> {
+  private subscriptions = new Map<string, StoredSubscription>();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Hibernation/deploys must not restore an unlimited authorization lease.
+    ctx.blockConcurrencyWhile(async () => {
+      this.subscriptions = await ctx.storage.list<StoredSubscription>({
+        prefix: SUBSCRIPTION_PREFIX,
+      });
+      await this.scheduleSecurityAlarm();
+    });
+  }
+
+  async alarm(): Promise<void> {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = attachmentOf(socket);
+      if (attachment && !isActiveConnection(socket, attachment)) {
+        await this.expireConnection(socket, attachment);
+      }
+    }
+    await this.reconcileSubscriptions();
+    await this.scheduleSecurityAlarm();
+  }
+
+  private async scheduleSecurityAlarm(retry = false): Promise<void> {
+    const deadlines = this.ctx
+      .getWebSockets()
+      .filter((socket) => socket.readyState === WebSocket.OPEN)
+      .map((socket) => attachmentOf(socket)?.authorizedUntil ?? Date.now());
+    if (retry) deadlines.push(Date.now() + 1_000);
+    if (!deadlines.length) return;
+    const next = Math.max(Date.now() + 1, Math.min(...deadlines));
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || next < current)
+      await this.ctx.storage.setAlarm(next);
+  }
+
+  private async expireConnection(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+  ): Promise<void> {
+    socket.serializeAttachment({ ...attachment, authorizedUntil: 0 });
+    socket.close(
+      4003,
+      "Spatial authorization expired; reconnect with a fresh ticket",
+    );
+    if (
+      !this.hasAnotherConnection(attachment.userId, attachment.connectionId)
+    ) {
+      this.broadcast({ type: "player.left", userId: attachment.userId });
+      await this.cleanupUserMedia(attachment.userId);
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const internalMatch = INTERNAL_CHAT_PATH.exec(url.pathname);
@@ -231,6 +308,8 @@ export class OfficeRoom extends DurableObject<Env> {
         : null;
     const attachment: ConnectionAttachment = {
       connectionId: crypto.randomUUID(),
+      officeId: claims.officeId,
+      authorizedUntil: claims.expiresAt,
       userId: claims.userId,
       displayName: claims.displayName,
       x: priorPosition?.x ?? spawn.x,
@@ -258,6 +337,7 @@ export class OfficeRoom extends DurableObject<Env> {
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(attachment);
+    await this.scheduleSecurityAlarm();
     this.reconcileBroadcastStates();
     for (const duplicate of duplicates) {
       duplicate.webSocket.close(4001, "Replaced by a newer connection");
@@ -326,6 +406,37 @@ export class OfficeRoom extends DurableObject<Env> {
     }
 
     const now = Date.now();
+    if (!isActiveConnection(webSocket, attachment)) {
+      await this.expireConnection(webSocket, attachment);
+      return;
+    }
+    if (data.type === "session.refresh") {
+      try {
+        const claims = await verifyRealtimeTicket(
+          data.ticket,
+          this.env.TICKET_SIGNING_SECRET ?? "",
+        );
+        if (
+          claims.userId !== attachment.userId ||
+          claims.officeId !== attachment.officeId ||
+          ticketAccessClass(claims) !== attachment.accessClass
+        ) {
+          await this.expireConnection(webSocket, attachment);
+          return;
+        }
+        // Recheck after the signature verification yields, including replacement tabs.
+        const current = attachmentOf(webSocket);
+        if (!current || !isActiveConnection(webSocket, current)) return;
+        webSocket.serializeAttachment({
+          ...current,
+          authorizedUntil: Math.max(current.authorizedUntil, claims.expiresAt),
+        });
+        await this.scheduleSecurityAlarm();
+      } catch {
+        await this.expireConnection(webSocket, attachment);
+      }
+      return;
+    }
     if (data.type === "ping") {
       safeSend(webSocket, {
         type: "pong",
@@ -337,6 +448,7 @@ export class OfficeRoom extends DurableObject<Env> {
 
     if (data.type === "desk.use") {
       this.handleDeskUse(webSocket, attachment, data.deskId, now);
+      await this.reconcileSubscriptions(attachment.userId);
       return;
     }
 
@@ -347,6 +459,7 @@ export class OfficeRoom extends DurableObject<Env> {
         data.targetUserId,
         now,
       );
+      await this.reconcileSubscriptions();
       return;
     }
 
@@ -357,6 +470,7 @@ export class OfficeRoom extends DurableObject<Env> {
         data.targetUserId,
         now,
       );
+      await this.reconcileSubscriptions();
       return;
     }
 
@@ -460,6 +574,7 @@ export class OfficeRoom extends DurableObject<Env> {
       player: playerOf(updated),
       serverTime: now,
     });
+    await this.reconcileSubscriptions(attachment.userId);
   }
 
   async webSocketClose(
@@ -470,6 +585,7 @@ export class OfficeRoom extends DurableObject<Env> {
     const attachment = attachmentOf(webSocket);
     webSocket.close(code, reason);
     if (!attachment) return;
+    if (code === 4003 && attachment.authorizedUntil === 0) return;
     const replacedByNewerTab = code === 4001;
     if (
       replacedByNewerTab ||
@@ -486,6 +602,7 @@ export class OfficeRoom extends DurableObject<Env> {
     const attachment = attachmentOf(webSocket);
     if (
       !attachment ||
+      attachment.authorizedUntil === 0 ||
       this.hasAnotherConnection(attachment.userId, attachment.connectionId)
     ) {
       return;
@@ -566,10 +683,21 @@ export class OfficeRoom extends DurableObject<Env> {
   }
 
   private async createMediaSession(userId: string): Promise<Response> {
+    const connection = this.attachmentForUser(userId);
+    if (!connection) {
+      return errorResponse(
+        403,
+        "PRESENCE_REQUIRED",
+        "An active spatial connection is required.",
+      );
+    }
     const result = await this.callRealtime("/sessions/new", "POST");
     if (!result.response.ok) return result.response;
     const parsed = RealtimeResponseSchema.safeParse(result.json);
-    const sessionId = parsed.success ? parsed.data.sessionId : undefined;
+    const sessionId =
+      parsed.success && !parsed.data.errorCode
+        ? parsed.data.sessionId
+        : undefined;
     if (!sessionId) {
       return errorResponse(
         502,
@@ -577,8 +705,18 @@ export class OfficeRoom extends DurableObject<Env> {
         "Realtime omitted sessionId.",
       );
     }
+    if (
+      this.attachmentForUser(userId)?.connectionId !== connection.connectionId
+    ) {
+      return errorResponse(
+        403,
+        "PRESENCE_REQUIRED",
+        "Spatial connection changed during media setup.",
+      );
+    }
     const record: MediaSessionRecord = {
       userId,
+      connectionId: connection.connectionId,
       sessionId,
       createdAt: Date.now(),
     };
@@ -613,6 +751,18 @@ export class OfficeRoom extends DurableObject<Env> {
       const returned = parsed.data.tracks?.find(
         (track) => track.trackName === requested.trackName,
       );
+      if (!returned || returned.errorCode || !returned.mid) continue;
+      if (!(await this.ownsSession(userId, sessionId))) {
+        await this.callRealtime(
+          `/sessions/${encodeURIComponent(sessionId)}/tracks/close`,
+          "PUT",
+          {
+            tracks: [{ mid: returned.mid }],
+            force: true,
+          },
+        );
+        continue;
+      }
       const stored: StoredTrack = {
         storageVersion: 1,
         ownerUserId: userId,
@@ -708,37 +858,7 @@ export class OfficeRoom extends DurableObject<Env> {
           "A publisher cannot subscribe to its own track.",
         );
       }
-      const subscriberAttachment = this.attachmentForUser(userId);
-      const publisherAttachment = this.attachmentForUser(stored.ownerUserId);
-      const broadcastSpeakers = this.activeBroadcastSpeakerIds();
-      const pull = authorizeStoredTrackPull({
-        subscriberUserId: userId,
-        ownerUserId: stored.ownerUserId,
-        subscriber: subscriberAttachment
-          ? {
-              x: subscriberAttachment.x,
-              y: subscriberAttachment.y,
-              zoneId: subscriberAttachment.zoneId,
-            }
-          : null,
-        publisher: publisherAttachment
-          ? {
-              x: publisherAttachment.x,
-              y: publisherAttachment.y,
-              zoneId: publisherAttachment.zoneId,
-            }
-          : null,
-        ...(subscriberAttachment?.accessClass &&
-        publisherAttachment?.accessClass
-          ? {
-              subscriberAccessClass: subscriberAttachment.accessClass,
-              publisherAccessClass: publisherAttachment.accessClass,
-            }
-          : {}),
-        map: OFFICE_MAP,
-        trackKind: stored.kind,
-        broadcastSpeakerUserIds: broadcastSpeakers,
-      });
+      const pull = this.authorizeTrackPull(userId, stored);
       if (!pull.ok) {
         return errorResponse(
           403,
@@ -757,7 +877,101 @@ export class OfficeRoom extends DurableObject<Env> {
     if (result.response.status === 410) {
       await this.ctx.storage.delete(sessionKey(sessionId));
     }
+    const parsed = RealtimeResponseSchema.safeParse(result.json);
+    if (result.response.ok && parsed.success && !parsed.data.errorCode) {
+      for (const requested of input.tracks) {
+        const returned = parsed.data.tracks?.find(
+          (track) =>
+            track.trackName === requested.trackName &&
+            track.sessionId === requested.sessionId,
+        );
+        if (!returned?.mid || returned.errorCode) continue;
+        const stored = await this.ctx.storage.get<StoredTrack>(
+          trackKey(requested.sessionId, requested.trackName),
+        );
+        const subscription: StoredSubscription = {
+          subscriberUserId: userId,
+          publisherUserId: stored?.ownerUserId ?? "",
+          sessionId,
+          mid: returned.mid,
+          publisherSessionId: requested.sessionId,
+          trackName: requested.trackName,
+        };
+        const key = `${SUBSCRIPTION_PREFIX}${sessionId}:${returned.mid}`;
+        this.subscriptions.set(key, subscription);
+        await this.ctx.storage.put(key, subscription);
+      }
+      // Position, lease or socket ownership can change while awaiting the SFU.
+      await this.reconcileSubscriptions(userId);
+    }
     return result.response;
+  }
+
+  private authorizeTrackPull(userId: string, stored: StoredTrack) {
+    const subscriber = this.attachmentForUser(userId);
+    const publisher = this.attachmentForUser(stored.ownerUserId);
+    return authorizeStoredTrackPull({
+      subscriberUserId: userId,
+      ownerUserId: stored.ownerUserId,
+      subscriber,
+      publisher,
+      ...(subscriber && publisher
+        ? {
+            subscriberAccessClass: subscriber.accessClass,
+            publisherAccessClass: publisher.accessClass,
+          }
+        : {}),
+      map: OFFICE_MAP,
+      trackKind: stored.kind,
+      broadcastSpeakerUserIds: this.activeBroadcastSpeakerIds(),
+    });
+  }
+
+  private async reconcileSubscriptions(affectedUserId?: string): Promise<void> {
+    for (const [key, subscription] of [...this.subscriptions]) {
+      if (
+        affectedUserId &&
+        subscription.subscriberUserId !== affectedUserId &&
+        subscription.publisherUserId !== affectedUserId
+      )
+        continue;
+      const track = await this.ctx.storage.get<StoredTrack>(
+        trackKey(subscription.publisherSessionId, subscription.trackName),
+      );
+      if (
+        track &&
+        this.authorizeTrackPull(subscription.subscriberUserId, track).ok &&
+        (await this.ownsSession(
+          subscription.subscriberUserId,
+          subscription.sessionId,
+        ))
+      )
+        continue;
+      try {
+        const result = await this.callRealtime(
+          `/sessions/${encodeURIComponent(subscription.sessionId)}/tracks/close`,
+          "PUT",
+          { tracks: [{ mid: subscription.mid }], force: true },
+        );
+        const parsed = RealtimeResponseSchema.safeParse(result.json);
+        if (
+          result.response.status === 410 ||
+          (result.response.ok &&
+            parsed.success &&
+            !parsed.data.errorCode &&
+            !parsed.data.tracks?.some((item) => item.errorCode))
+        ) {
+          if (this.subscriptions.get(key) === subscription) {
+            this.subscriptions.delete(key);
+            await this.ctx.storage.delete(key);
+          }
+          continue;
+        }
+      } catch {
+        // Keep the durable record until the SFU confirms revocation.
+      }
+      await this.scheduleSecurityAlarm(true);
+    }
   }
 
   private async renegotiate(userId: string, body: unknown): Promise<Response> {
@@ -814,7 +1028,27 @@ export class OfficeRoom extends DurableObject<Env> {
     const parsed = RealtimeResponseSchema.safeParse(result.json);
     if (!parsed.success || parsed.data.errorCode) return result.response;
 
-    for (const stored of owned) await this.deleteTrack(stored);
+    const confirmedMids = new Set(
+      input.tracks
+        .filter((track) => {
+          if (!parsed.data.tracks) return true;
+          const closed = parsed.data.tracks.find(
+            (item) => item.mid === track.mid,
+          );
+          return closed && !closed.errorCode;
+        })
+        .map((track) => track.mid),
+    );
+    for (const stored of owned) {
+      if (confirmedMids.has(stored.mid)) await this.deleteTrack(stored);
+    }
+    for (const track of input.tracks.filter((item) =>
+      confirmedMids.has(item.mid),
+    )) {
+      const key = `${SUBSCRIPTION_PREFIX}${input.sessionId}:${track.mid}`;
+      this.subscriptions.delete(key);
+      await this.ctx.storage.delete(key);
+    }
     return result.response;
   }
 
@@ -822,7 +1056,11 @@ export class OfficeRoom extends DurableObject<Env> {
     let latest: ConnectionAttachment | null = null;
     for (const webSocket of this.ctx.getWebSockets()) {
       const attachment = attachmentOf(webSocket);
-      if (attachment?.userId !== userId) continue;
+      if (
+        attachment?.userId !== userId ||
+        !isActiveConnection(webSocket, attachment)
+      )
+        continue;
       if (!latest || attachment.joinedAt >= latest.joinedAt) {
         latest = attachment;
       }
@@ -847,7 +1085,12 @@ export class OfficeRoom extends DurableObject<Env> {
     const record = await this.ctx.storage.get<MediaSessionRecord>(
       sessionKey(sessionId),
     );
-    return record?.userId === userId;
+    const connection = this.attachmentForUser(userId);
+    return Boolean(
+      connection &&
+      record?.userId === userId &&
+      record.connectionId === connection.connectionId,
+    );
   }
 
   private async listPublishedTracks(): Promise<PublishedTrack[]> {
@@ -874,6 +1117,7 @@ export class OfficeRoom extends DurableObject<Env> {
       sessionId: stored.sessionId,
       trackName: stored.trackName,
     });
+    await this.reconcileSubscriptions(stored.ownerUserId);
   }
 
   private async revokePublisherTracksOutsideSession(
@@ -928,6 +1172,7 @@ export class OfficeRoom extends DurableObject<Env> {
     if (ownedSessionKeys.length > 0) {
       await this.ctx.storage.delete(ownedSessionKeys);
     }
+    await this.reconcileSubscriptions(userId);
   }
 
   private async callRealtime(
@@ -957,6 +1202,7 @@ export class OfficeRoom extends DurableObject<Env> {
           "Content-Type": "application/json",
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(8_000),
       },
     );
     const text = await upstream.text();
@@ -986,7 +1232,7 @@ export class OfficeRoom extends DurableObject<Env> {
     const latest = new Map<string, ConnectionAttachment>();
     for (const webSocket of this.ctx.getWebSockets()) {
       const attachment = attachmentOf(webSocket);
-      if (!attachment) continue;
+      if (!attachment || !isActiveConnection(webSocket, attachment)) continue;
       const current = latest.get(attachment.userId);
       if (!current || attachment.joinedAt >= current.joinedAt) {
         latest.set(attachment.userId, attachment);
@@ -1093,7 +1339,7 @@ export class OfficeRoom extends DurableObject<Env> {
 
       for (const webSocket of this.ctx.getWebSockets()) {
         const attachment = attachmentOf(webSocket);
-        if (!attachment) continue;
+        if (!attachment || !isActiveConnection(webSocket, attachment)) continue;
         if (
           !shouldReceiveChatFanOut({
             accessClass: attachment.accessClass,
@@ -1137,7 +1383,7 @@ export class OfficeRoom extends DurableObject<Env> {
     >();
     for (const webSocket of this.ctx.getWebSockets()) {
       const attachment = attachmentOf(webSocket);
-      if (!attachment) continue;
+      if (!attachment || !isActiveConnection(webSocket, attachment)) continue;
       const current = latest.get(attachment.userId);
       if (!current || attachment.joinedAt >= current.attachment.joinedAt) {
         latest.set(attachment.userId, { webSocket, attachment });
@@ -1183,7 +1429,11 @@ export class OfficeRoom extends DurableObject<Env> {
     let updated: ConnectionAttachment | null = null;
     for (const webSocket of this.ctx.getWebSockets()) {
       const attachment = attachmentOf(webSocket);
-      if (attachment?.userId !== userId) continue;
+      if (
+        attachment?.userId !== userId ||
+        !isActiveConnection(webSocket, attachment)
+      )
+        continue;
       updated = updater(attachment);
       webSocket.serializeAttachment(updated);
     }
@@ -1278,7 +1528,12 @@ export class OfficeRoom extends DurableObject<Env> {
     const latest = new Map<string, ConnectionAttachment>();
     for (const webSocket of this.ctx.getWebSockets()) {
       const attachment = attachmentOf(webSocket);
-      if (!attachment || attachment.userId === excludeUserId) continue;
+      if (
+        !attachment ||
+        !isActiveConnection(webSocket, attachment) ||
+        attachment.userId === excludeUserId
+      )
+        continue;
       const current = latest.get(attachment.userId);
       if (!current || attachment.joinedAt >= current.joinedAt) {
         latest.set(attachment.userId, attachment);
@@ -1292,6 +1547,7 @@ export class OfficeRoom extends DurableObject<Env> {
       const attachment = attachmentOf(candidate);
       return (
         attachment?.userId === userId &&
+        isActiveConnection(candidate, attachment) &&
         attachment.connectionId !== connectionId
       );
     });
@@ -1300,7 +1556,12 @@ export class OfficeRoom extends DurableObject<Env> {
   private broadcast(event: ServerEvent, excludeConnectionId?: string): void {
     for (const webSocket of this.ctx.getWebSockets()) {
       const attachment = attachmentOf(webSocket);
-      if (attachment?.connectionId === excludeConnectionId) continue;
+      if (
+        !attachment ||
+        !isActiveConnection(webSocket, attachment) ||
+        attachment.connectionId === excludeConnectionId
+      )
+        continue;
       safeSend(webSocket, event);
     }
   }

@@ -199,7 +199,7 @@ describe("SpatialAudioMixer graph lifecycle", () => {
     expect(context.disconnected).toContain("gain");
   });
 
-  it("G: walking out of range keeps the mixer attached at zero gain", () => {
+  it("G: revoking a subscription disconnects the mixer graph", () => {
     const context = fakeContext();
     const mixer = new SpatialAudioMixer(() => context);
     const stream = fakeStream();
@@ -217,8 +217,9 @@ describe("SpatialAudioMixer graph lifecycle", () => {
     syncSpatialAudioGraph(mixer, [
       { ...remote, subscribed: false, audioGain: 0 },
     ]);
-    expect(mixer.attachedKeys()).toEqual(["user-a:audio"]);
-    expect(mixer.currentGain("user-a:audio")).toBe(0);
+    expect(mixer.attachedKeys()).toEqual([]);
+    expect(mixer.currentGain("user-a:audio")).toBeNull();
+    expect(context.disconnected).toEqual(["source", "gain"]);
   });
 
   it("H: reconnect session replacement keeps exactly one active graph", () => {
@@ -434,14 +435,14 @@ describe("warm-up HTML elements for WebAudio (Chromium quirk)", () => {
     expect(audible.has("a:audio")).toBe(false);
   });
 
-  it("HTML bypass: every audio key is audible, including out-of-range warm-ups", () => {
+  it("HTML bypass keeps revoked and out-of-range audio excluded", () => {
     const audible = audibleHtmlAudioKeys(remotes, [], true);
-    expect([...audible].sort()).toEqual(["a:audio", "b:audio", "c:audio"]);
+    expect([...audible].sort()).toEqual(["a:audio", "b:audio"]);
   });
 
   it("video tracks never become audible keys", () => {
     const audible = audibleHtmlAudioKeys(remotes, ["c:audio", "a:video"], true);
-    expect(audible.has("c:audio")).toBe(true);
+    expect(audible.has("c:audio")).toBe(false);
     expect(audible.has("a:video")).toBe(false);
   });
 });

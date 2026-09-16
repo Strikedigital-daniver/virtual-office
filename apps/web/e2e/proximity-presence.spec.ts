@@ -2,9 +2,7 @@ import { test, expect } from "@playwright/test";
 
 import { loadE2eCredentials } from "./helpers/env";
 import { moveUntilDistance, settle } from "./helpers/movement";
-import {
-  NEAR_MAX_DISTANCE,
-} from "./helpers/proximity-contract";
+import { NEAR_MAX_DISTANCE } from "./helpers/proximity-contract";
 import { E2E_TIMING } from "./helpers/timing";
 import {
   createInstrumentedContext,

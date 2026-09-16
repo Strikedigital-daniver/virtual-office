@@ -9,6 +9,10 @@ import { z } from "zod";
 import { isSameOrigin } from "@/lib/security";
 import { fanOutSpatialChatMessage } from "@/lib/spatial-chat/fanout";
 import {
+  ChatHistoryQuerySchema,
+  ChatMessageConflictError,
+} from "@/lib/spatial-chat/message-integrity";
+import {
   requireAccessibleChannel,
   requireSpatialChatContext,
   resolveDisplayName,
@@ -38,11 +42,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Sesión requerida." }, { status: 401 });
   }
 
-  const channelId = request.nextUrl.searchParams.get("channelId");
-  if (!channelId) {
-    return NextResponse.json({ error: "Canal requerido." }, { status: 400 });
+  const query = ChatHistoryQuerySchema.safeParse(
+    Object.fromEntries(request.nextUrl.searchParams),
+  );
+  if (!query.success) {
+    return NextResponse.json({ error: "Consulta no válida." }, { status: 400 });
   }
 
+  const { channelId, cursorCreatedAt, cursorId } = query.data;
   const channel = await requireAccessibleChannel(context, channelId);
   if (!channel) {
     return NextResponse.json(
@@ -50,10 +57,6 @@ export async function GET(request: NextRequest) {
       { status: 404 },
     );
   }
-
-  const cursorCreatedAt =
-    request.nextUrl.searchParams.get("cursorCreatedAt") ?? undefined;
-  const cursorId = request.nextUrl.searchParams.get("cursorId") ?? undefined;
 
   try {
     const page = await listChannelMessages({
@@ -161,7 +164,10 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ message });
-  } catch {
+  } catch (error) {
+    if (error instanceof ChatMessageConflictError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return NextResponse.json(
       { error: "No se pudo enviar el mensaje." },
       { status: 503 },

@@ -153,10 +153,17 @@ describe("media switchboard authorization", () => {
       },
       SECRET,
     );
+    const connection = await worker.fetch(
+      `${ORIGIN}/office/${officeId}/connect?ticket=${encodeURIComponent(ticket)}`,
+      { headers: { Upgrade: "websocket", Origin: ORIGIN } },
+    );
+    expect(connection.status).toBe(101);
+    connection.webSocket!.accept();
     const response = await mediaCall(officeId, "session", ticket);
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
       error: "REALTIME_NOT_CONFIGURED",
     });
+    connection.webSocket!.close(1000, "test cleanup");
   });
 });

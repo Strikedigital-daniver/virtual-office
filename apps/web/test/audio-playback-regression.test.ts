@@ -67,6 +67,29 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 describe("remote audio element lifecycle", () => {
+  it("unmounts warm-up audio and releases srcObject as soon as authorization is revoked", async () => {
+    const media = remote();
+    await act(async () =>
+      root.render(
+        createElement(ProximityAudioPlayback, {
+          remotes: [media],
+          audibleKeys: new Set<string>(),
+        }),
+      ),
+    );
+    const element = host.querySelector("audio")!;
+    expect(element.srcObject).not.toBeNull();
+    await act(async () =>
+      root.render(
+        createElement(ProximityAudioPlayback, {
+          remotes: [{ ...media, subscribed: false }],
+          audibleKeys: new Set([media.key]),
+        }),
+      ),
+    );
+    expect(host.querySelector("audio")).toBeNull();
+    expect(element.srcObject).toBeNull();
+  });
   it("keeps the same srcObject through position/gain updates and new diagnostic callbacks", async () => {
     const media = remote();
     for (let tick = 0; tick < 12; tick++) {

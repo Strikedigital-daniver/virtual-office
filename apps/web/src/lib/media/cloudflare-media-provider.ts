@@ -9,6 +9,7 @@ import {
 
 import {
   remoteKey,
+  MEDIA_REQUEST_TIMEOUT_MS,
   type MediaProvider,
   type MediaProviderCallbacks,
   type RemoteTrackRef,
@@ -101,6 +102,16 @@ export class CloudflareMediaProvider implements MediaProvider {
   private readonly subscribingKeys = new Set<string>();
   private readonly awaitingTrackKeys = new Set<string>();
   private readonly releasingKeys = new Set<string>();
+  private readonly revokedRemoteKeys = new Set<string>();
+  private readonly subscriptionRefs = new Map<string, RemoteTrackRef>();
+  private readonly peerConnections = new Set<RTCPeerConnection>();
+  private readonly publishingTracks = new Set<MediaStreamTrack>();
+  private readonly awaitingTrackTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly lifetime = new AbortController();
+  private disposed = false;
   private sendRepairCooldownUntil = 0;
   private lastPublishAt = 0;
 
@@ -138,6 +149,10 @@ export class CloudflareMediaProvider implements MediaProvider {
     return this.remoteTracks.get(remoteKey(ref))?.track ?? null;
   }
 
+  remoteRefs(): RemoteTrackRef[] {
+    return [...this.subscriptionRefs.values()];
+  }
+
   private clearPendingForRef(ref: RemoteTrackRef): void {
     for (const [mid, pending] of this.pendingRemote.entries()) {
       if (remoteKey(pending) === remoteKey(ref)) {
@@ -153,6 +168,7 @@ export class CloudflareMediaProvider implements MediaProvider {
 
   isRemoteBound(ref: RemoteTrackRef): boolean {
     const key = remoteKey(ref);
+    if (this.revokedRemoteKeys.has(key)) return false;
     const remote = this.remoteTracks.get(key);
     if (remote) {
       if (remote.track.readyState === "ended") {
@@ -177,15 +193,33 @@ export class CloudflareMediaProvider implements MediaProvider {
   private connecting: Promise<void> | null = null;
 
   async connect(): Promise<void> {
+    this.assertActive();
     if (this.send && this.recv) return;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
-      const [send, recv] = await Promise.all([
+      const results = await Promise.allSettled([
         this.openLink("send"),
         this.openLink("recv"),
       ]);
-      this.send = send;
-      this.recv = recv;
+      const [send, recv] = results;
+      if (
+        this.disposed ||
+        send.status === "rejected" ||
+        recv.status === "rejected"
+      ) {
+        for (const result of results) {
+          if (result.status === "fulfilled")
+            this.closePeer(result.value.peerConnection);
+        }
+        this.assertActive();
+        throw send.status === "rejected"
+          ? send.reason
+          : recv.status === "rejected"
+            ? recv.reason
+            : new Error("Media connection failed");
+      }
+      this.send = send.value;
+      this.recv = recv.value;
     })().finally(() => {
       this.connecting = null;
     });
@@ -193,24 +227,37 @@ export class CloudflareMediaProvider implements MediaProvider {
   }
 
   private async openLink(role: "send" | "recv"): Promise<SfuLink> {
+    this.assertActive();
     const peerConnection = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
       bundlePolicy: "max-bundle",
     });
+    this.peerConnections.add(peerConnection);
     peerConnection.addEventListener("connectionstatechange", () => {
+      if (this.disposed) return;
       this.callbacks.onState(`${role}:${peerConnection.connectionState}`);
     });
     if (role === "recv") {
-      peerConnection.addEventListener("track", (event) =>
-        this.handleRemoteTrack(event),
-      );
+      peerConnection.addEventListener("track", (event) => {
+        if (this.disposed || !this.peerConnections.has(peerConnection)) {
+          event.track.stop();
+          return;
+        }
+        this.handleRemoteTrack(event);
+      });
     }
 
-    const response = parseRealtime(await this.call("session"));
-    if (!response.sessionId) {
-      throw new Error("Realtime did not return a media session ID");
+    try {
+      const response = parseRealtime(await this.call("session"));
+      this.assertActive();
+      if (!response.sessionId) {
+        throw new Error("Realtime did not return a media session ID");
+      }
+      return { peerConnection, sessionId: response.sessionId };
+    } catch (error) {
+      this.closePeer(peerConnection);
+      throw error;
     }
-    return { peerConnection, sessionId: response.sessionId };
   }
 
   private async applyNegotiation(
@@ -239,15 +286,21 @@ export class CloudflareMediaProvider implements MediaProvider {
     kind: MediaKind,
     track: MediaStreamTrack,
   ): Promise<PublishedTrack> {
-    return this.sendQueue.run(async () => {
-      try {
-        return await this.publishOnce(kind, track);
-      } catch (error) {
-        if (!isRecoverableSfuError(error)) throw error;
-        await this.recreateSendLink();
-        return this.publishOnce(kind, track);
-      }
-    });
+    this.assertActive();
+    this.publishingTracks.add(track);
+    return this.sendQueue
+      .run(async () => {
+        try {
+          this.assertActive();
+          if (!this.send) this.send = await this.openLink("send");
+          return await this.publishOnce(kind, track);
+        } catch (error) {
+          if (this.disposed || !isRecoverableSfuError(error)) throw error;
+          await this.recreateSendLink();
+          return this.publishOnce(kind, track);
+        }
+      })
+      .finally(() => this.publishingTracks.delete(track));
   }
 
   private async recreateSendLink(): Promise<void> {
@@ -262,11 +315,26 @@ export class CloudflareMediaProvider implements MediaProvider {
       }
     }
     this.published.clear();
-    this.send?.peerConnection.close();
+    if (this.send) this.closePeer(this.send.peerConnection);
     this.send = null;
-    this.send = await this.openLink("send");
-    for (const [kind, item] of keep) {
-      await this.publishOnce(kind, item.track);
+    try {
+      this.send = await this.openLink("send");
+      for (const [kind, item] of keep) {
+        if (item.track.readyState !== "live") continue;
+        await this.publishOnce(kind, item.track);
+      }
+    } catch (error) {
+      // A failed repair must not leave a captured device detached from any
+      // publication while the UI still claims it is live.
+      for (const [kind, item] of keep) {
+        item.track.enabled = false;
+        item.track.stop();
+        this.callbacks.onLocalTrackClosed?.(kind);
+      }
+      this.published.clear();
+      if (this.send) this.closePeer(this.send.peerConnection);
+      this.send = null;
+      throw error;
     }
   }
 
@@ -306,6 +374,7 @@ export class CloudflareMediaProvider implements MediaProvider {
       );
       await this.applyNegotiation(link, response);
       await applySenderBitrate(transceiver.sender, kind);
+      this.assertActive();
       this.published.set(kind, {
         track,
         transceiver,
@@ -313,6 +382,19 @@ export class CloudflareMediaProvider implements MediaProvider {
         mid,
         kind,
       });
+      track.addEventListener(
+        "ended",
+        () => {
+          if (this.published.get(kind)?.track !== track) return;
+          this.callbacks.onLocalTrackClosed?.(kind);
+          void this.unpublish(kind).catch((error) =>
+            this.diagnostics?.log(
+              `track-ended:cleanup ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+        },
+        { once: true },
+      );
       this.lastPublishAt = Date.now();
       this.diagnostics?.publishStep(`${kind}:published`);
       // Non-fatal: the track is already registered in the catalog above, so a
@@ -365,31 +447,42 @@ export class CloudflareMediaProvider implements MediaProvider {
         throw new Error("The transceiver has no MID for catalog resync");
       }
       this.diagnostics?.publishStep(`${kind}:catalog-resync`);
-      const offer = await link.peerConnection.createOffer();
-      await link.peerConnection.setLocalDescription(offer);
-      const response = parseRealtime(
-        await this.call("tracks/publish", {
-          sessionId: link.sessionId,
-          sessionDescription: describeSessionDescription(
-            link.peerConnection.localDescription,
-          ),
-          tracks: [
-            {
-              location: "local",
-              mid: local.transceiver.mid,
-              trackName: local.trackName,
-              kind,
-            },
-          ],
-        }),
-      );
-      await this.applyNegotiation(link, response);
-      this.diagnostics?.publishStep(`${kind}:catalog-resynced`);
+      try {
+        const offer = await link.peerConnection.createOffer();
+        await link.peerConnection.setLocalDescription(offer);
+        const response = parseRealtime(
+          await this.call("tracks/publish", {
+            sessionId: link.sessionId,
+            sessionDescription: describeSessionDescription(
+              link.peerConnection.localDescription,
+            ),
+            tracks: [
+              {
+                location: "local",
+                mid: local.transceiver.mid,
+                trackName: local.trackName,
+                kind,
+              },
+            ],
+          }),
+        );
+        await this.applyNegotiation(link, response);
+        this.diagnostics?.publishStep(`${kind}:catalog-resynced`);
+      } catch (error) {
+        await rollbackLocalOffer(link.peerConnection);
+        throw error;
+      }
     });
   }
 
   /** Re-broadcast catalog entries once ICE can actually carry audio. */
   private async announcePublishedTracks(sessionId: string): Promise<void> {
+    if (
+      this.disposed ||
+      this.send?.sessionId !== sessionId ||
+      this.published.size === 0
+    )
+      return;
     try {
       await this.call("tracks/announce", { sessionId });
       this.diagnostics?.log("publish:catalog-announce");
@@ -401,17 +494,23 @@ export class CloudflareMediaProvider implements MediaProvider {
   }
 
   async unpublish(kind: MediaKind): Promise<void> {
+    const published = this.published.get(kind);
+    if (!published) return;
+    const link = this.send;
+    this.published.delete(kind);
+    published.track.enabled = false;
+    published.track.stop();
     await this.sendQueue.run(async () => {
-      const published = this.published.get(kind);
-      if (!published) return;
-      this.published.delete(kind);
-      const link = this.requireSend();
-
       await hardStopLocalTrack({
         track: published.track,
         sender: published.transceiver.sender,
         transceiver: published.transceiver,
-      });
+      }).catch((error) =>
+        this.diagnostics?.log(
+          `unpublish:detach ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      if (!link) return;
       await this.call("tracks/close", {
         sessionId: link.sessionId,
         tracks: [{ mid: published.mid }],
@@ -429,7 +528,9 @@ export class CloudflareMediaProvider implements MediaProvider {
     this.remoteTracks.clear();
     this.pendingRemote.clear();
     this.awaitingTrackKeys.clear();
-    this.recv?.peerConnection.close();
+    this.clearAwaitingTrackTimers();
+    if (this.recv) this.closePeer(this.recv.peerConnection);
+    this.recv = null;
     this.recv = await this.openLink("recv");
   }
 
@@ -506,16 +607,21 @@ export class CloudflareMediaProvider implements MediaProvider {
 
   private scheduleAwaitingTrackTimeout(ref: RemoteTrackRef): void {
     const key = remoteKey(ref);
-    setTimeout(() => {
+    const previous = this.awaitingTrackTimers.get(key);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.awaitingTrackTimers.delete(key);
       if (!this.awaitingTrackKeys.has(key)) return;
       if (this.remoteTracks.has(key)) return;
       this.awaitingTrackKeys.delete(key);
       this.clearPendingForRef(ref);
       this.diagnostics?.log(`subscribe:awaiting-timeout ${ref.kind}`);
     }, 8_000);
+    this.awaitingTrackTimers.set(key, timer);
   }
 
   async repairSendTransportIfNeeded(): Promise<void> {
+    if (this.disposed) return;
     if (Date.now() < this.sendRepairCooldownUntil) return;
     const link = this.send;
     if (!link || this.published.size === 0) return;
@@ -530,6 +636,7 @@ export class CloudflareMediaProvider implements MediaProvider {
     this.sendRepairCooldownUntil = Date.now() + 10_000;
     this.diagnostics?.log(`send:repair ice=${ice} conn=${conn}`);
     await this.sendQueue.run(async () => {
+      if (this.disposed || this.published.size === 0) return;
       await this.recreateSendLink();
     });
   }
@@ -539,9 +646,13 @@ export class CloudflareMediaProvider implements MediaProvider {
   }
 
   async subscribeMany(refs: RemoteTrackRef[]): Promise<void> {
+    // A later unsubscribe must be able to cancel a subscribe still in the queue.
+    for (const ref of refs) this.revokedRemoteKeys.delete(remoteKey(ref));
     await this.recvQueue.run(async () => {
+      this.assertActive();
       const pending = refs.filter((ref) => {
         if (ref.ownerUserId === this.selfUserId) return false;
+        if (this.revokedRemoteKeys.has(remoteKey(ref))) return false;
         if (this.isRemoteBound(ref)) return false;
         const key = remoteKey(ref);
         if (this.subscribingKeys.has(key)) return false;
@@ -555,6 +666,7 @@ export class CloudflareMediaProvider implements MediaProvider {
 
       for (const group of batches) {
         for (const ref of group) {
+          this.subscriptionRefs.set(remoteKey(ref), ref);
           this.subscribingKeys.add(remoteKey(ref));
         }
         const clearGroup = () => {
@@ -602,17 +714,41 @@ export class CloudflareMediaProvider implements MediaProvider {
   }
 
   async unsubscribe(ref: RemoteTrackRef): Promise<void> {
+    const key = remoteKey(ref);
+    this.revokedRemoteKeys.add(key);
+    const remote = this.remoteTracks.get(key);
+    if (remote) {
+      // Local revocation cannot wait behind queued negotiation or network I/O.
+      remote.track.stop();
+      remote.transceiver.stop();
+      this.remoteTracks.delete(key);
+      this.callbacks.onRemoteTrackClosed(remote.ref);
+    }
     await this.recvQueue.run(async () => {
-      const key = remoteKey(ref);
+      const pendingMids = [...this.pendingRemote.entries()]
+        .filter(([, pending]) => remoteKey(pending) === key)
+        .map(([mid]) => mid);
       this.clearPendingForRef(ref);
-      const remote = this.remoteTracks.get(key);
-      if (!remote) return;
-      const link = this.requireRecv();
-      const mid = remote.transceiver.mid;
-      if (mid) {
+      this.awaitingTrackKeys.delete(key);
+      const timer = this.awaitingTrackTimers.get(key);
+      if (timer) clearTimeout(timer);
+      this.awaitingTrackTimers.delete(key);
+      this.subscriptionRefs.delete(key);
+      const link = this.recv;
+      const lateRemote = this.remoteTracks.get(key);
+      if (lateRemote) {
+        lateRemote.track.stop();
+        lateRemote.transceiver.stop();
+        this.remoteTracks.delete(key);
+        this.callbacks.onRemoteTrackClosed(lateRemote.ref);
+      }
+      const mids = new Set(pendingMids);
+      if (remote?.transceiver.mid) mids.add(remote.transceiver.mid);
+      if (lateRemote?.transceiver.mid) mids.add(lateRemote.transceiver.mid);
+      if (link && mids.size > 0) {
         await this.call("tracks/close", {
           sessionId: link.sessionId,
-          tracks: [{ mid }],
+          tracks: [...mids].map((mid) => ({ mid })),
           force: true,
         }).catch((error) => {
           this.diagnostics?.log(
@@ -620,42 +756,62 @@ export class CloudflareMediaProvider implements MediaProvider {
           );
         });
       }
-      remote.track.stop();
-      remote.transceiver.stop();
-      this.remoteTracks.delete(key);
-      this.callbacks.onRemoteTrackClosed(remote.ref);
+      this.revokedRemoteKeys.delete(key);
     });
   }
 
   async disconnect(): Promise<void> {
-    for (const kind of [...this.published.keys()]) {
-      await this.unpublish(kind).catch(() => undefined);
+    if (this.disposed) return;
+    this.disposed = true;
+    this.lifetime.abort();
+    const send = this.send;
+    const published = [...this.published.values()];
+    // Stopping devices cannot wait behind a pending publish or a slow API call.
+    for (const track of this.publishingTracks) {
+      track.enabled = false;
+      track.stop();
     }
-    await this.recvQueue.run(async () => {
-      for (const remote of this.remoteTracks.values()) {
-        remote.track.stop();
-        this.callbacks.onRemoteTrackClosed(remote.ref);
-      }
-      this.remoteTracks.clear();
-      this.pendingRemote.clear();
-    });
-    this.cachedAuth = null;
-    this.send?.peerConnection.close();
-    this.recv?.peerConnection.close();
+    for (const local of published) {
+      local.track.enabled = false;
+      local.track.stop();
+    }
+    for (const remote of this.remoteTracks.values()) {
+      remote.track.stop();
+      this.callbacks.onRemoteTrackClosed(remote.ref);
+    }
+    for (const peer of this.peerConnections) this.closePeer(peer);
+    this.published.clear();
+    this.publishingTracks.clear();
+    this.remoteTracks.clear();
+    this.pendingRemote.clear();
+    this.awaitingTrackKeys.clear();
+    this.subscribingKeys.clear();
+    this.subscriptionRefs.clear();
+    this.revokedRemoteKeys.clear();
+    this.clearAwaitingTrackTimers();
     this.send = null;
     this.recv = null;
+    if (send && published.length > 0) {
+      await this.call("tracks/close", {
+        sessionId: send.sessionId,
+        tracks: published.map((local) => ({ mid: local.mid })),
+        force: true,
+      }).catch(() => undefined);
+    }
+    this.cachedAuth = null;
   }
 
   private handleRemoteTrack(event: RTCTrackEvent): void {
     let mid = event.transceiver.mid;
     let ref = mid ? this.pendingRemote.get(mid) : undefined;
-    if (!ref) {
-      for (const [pendingMid, pendingRef] of this.pendingRemote.entries()) {
-        if (pendingRef.kind === event.track.kind) {
-          ref = pendingRef;
-          mid = pendingMid;
-          break;
-        }
+    // A known MID must never fall back to another participant of the same
+    // kind: late tracks from a revoked subscription can otherwise be relabeled.
+    if (!ref && !mid) {
+      const matching = [...this.pendingRemote.entries()].filter(
+        ([, pendingRef]) => pendingRef.kind === event.track.kind,
+      );
+      if (matching.length === 1) {
+        [mid, ref] = matching[0]!;
       }
     }
     if (!ref || !mid) {
@@ -664,8 +820,7 @@ export class CloudflareMediaProvider implements MediaProvider {
         if (remote.ref.kind !== event.track.kind) continue;
         if (
           remote.transceiver !== event.transceiver &&
-          transceiverMid &&
-          remote.transceiver.mid !== transceiverMid
+          (!transceiverMid || remote.transceiver.mid !== transceiverMid)
         ) {
           continue;
         }
@@ -675,16 +830,16 @@ export class CloudflareMediaProvider implements MediaProvider {
           );
           return;
         }
-        remote.track = event.track;
         this.diagnostics?.log(
           `orphan-track:rebind ${remote.ref.kind} user=${remote.ref.ownerUserId.slice(0, 8)} mid=${transceiverMid?.slice(0, 6) ?? "none"}`,
         );
-        this.callbacks.onRemoteTrack(remote.ref, event.track);
+        this.bindRemoteTrack(remote.ref, event);
         return;
       }
       this.diagnostics?.log(
         `orphan-track mid=${mid?.slice(0, 6) ?? transceiverMid?.slice(0, 6) ?? "none"} kind=${event.track.kind}`,
       );
+      event.track.stop();
       return;
     }
     if (event.track.readyState !== "live") {
@@ -695,8 +850,19 @@ export class CloudflareMediaProvider implements MediaProvider {
       );
       return;
     }
+    if (this.revokedRemoteKeys.has(remoteKey(ref))) {
+      event.track.stop();
+      return;
+    }
     this.pendingRemote.delete(mid);
+    this.bindRemoteTrack(ref, event);
+  }
+
+  private bindRemoteTrack(ref: RemoteTrackRef, event: RTCTrackEvent): void {
     this.awaitingTrackKeys.delete(remoteKey(ref));
+    const timer = this.awaitingTrackTimers.get(remoteKey(ref));
+    if (timer) clearTimeout(timer);
+    this.awaitingTrackTimers.delete(remoteKey(ref));
     this.remoteTracks.set(remoteKey(ref), {
       ref,
       track: event.track,
@@ -713,6 +879,8 @@ export class CloudflareMediaProvider implements MediaProvider {
       "ended",
       () => {
         logTrackLifecycle("ended");
+        if (this.remoteTracks.get(remoteKey(ref))?.track !== event.track)
+          return;
         this.remoteTracks.delete(remoteKey(ref));
         this.callbacks.onRemoteTrackClosed(ref);
       },
@@ -723,23 +891,36 @@ export class CloudflareMediaProvider implements MediaProvider {
   }
 
   private async call(action: string, body?: unknown): Promise<unknown> {
+    const cleanup = action === "tracks/close";
+    if (!cleanup) this.assertActive();
     const auth = this.cachedAuth ?? (await this.ticketSource());
     this.cachedAuth = auth;
-    const execute = async (ticket: string) =>
-      fetch(`${auth.mediaBaseUrl}/${action}`, {
+    const execute = async (currentAuth: {
+      ticket: string;
+      mediaBaseUrl: string;
+    }) => {
+      if (!cleanup) this.assertActive();
+      return fetch(`${currentAuth.mediaBaseUrl}/${action}`, {
         method: "POST",
+        signal: cleanup
+          ? AbortSignal.timeout(5_000)
+          : AbortSignal.any([
+              this.lifetime.signal,
+              AbortSignal.timeout(MEDIA_REQUEST_TIMEOUT_MS),
+            ]),
         headers: {
-          Authorization: `Bearer ${ticket}`,
+          Authorization: `Bearer ${currentAuth.ticket}`,
           "Content-Type": "application/json",
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
+    };
 
-    let response = await execute(auth.ticket);
-    if (response.status === 401) {
+    let response = await execute(auth);
+    if (response.status === 401 && !this.disposed) {
       const refreshed = await this.ticketSource();
       this.cachedAuth = refreshed;
-      response = await execute(refreshed.ticket);
+      response = await execute(refreshed);
     }
     const payload = (await response.json().catch(() => null)) as unknown;
     if (!response.ok) {
@@ -753,12 +934,28 @@ export class CloudflareMediaProvider implements MediaProvider {
     return payload;
   }
 
+  private assertActive(): void {
+    if (this.disposed) throw new Error("La sesión de medios está cerrada.");
+  }
+
+  private closePeer(peer: RTCPeerConnection): void {
+    this.peerConnections.delete(peer);
+    peer.close();
+  }
+
+  private clearAwaitingTrackTimers(): void {
+    for (const timer of this.awaitingTrackTimers.values()) clearTimeout(timer);
+    this.awaitingTrackTimers.clear();
+  }
+
   private requireSend(): SfuLink {
+    this.assertActive();
     if (!this.send) throw new Error("The SFU send session is not ready");
     return this.send;
   }
 
   private requireRecv(): SfuLink {
+    this.assertActive();
     if (!this.recv) throw new Error("The SFU receive session is not ready");
     return this.recv;
   }

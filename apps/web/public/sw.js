@@ -14,7 +14,10 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key !== CACHE_NAME)
+            .filter(
+              (key) =>
+                key.startsWith("virtual-office-shell-") && key !== CACHE_NAME,
+            )
             .map((key) => caches.delete(key)),
         ),
       )
@@ -49,7 +52,20 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match(OFFLINE_URL)),
+      fetch(event.request).catch(
+        async () =>
+          (await caches.match(OFFLINE_URL)) ??
+          new Response(
+            "Sin conexión. Vuelve a intentarlo cuando tengas internet.",
+            {
+              status: 503,
+              headers: {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Cache-Control": "no-store",
+              },
+            },
+          ),
+      ),
     );
   }
 });

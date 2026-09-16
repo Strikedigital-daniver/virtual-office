@@ -93,9 +93,7 @@ export async function loginAndEnterOffice(
   });
   const loginError = page.locator(".error[role='alert']");
   if (await loginError.isVisible().catch(() => false)) {
-    throw new Error(
-      `Login falló: ${(await loginError.innerText()).trim()}`,
-    );
+    throw new Error(`Login falló: ${(await loginError.innerText()).trim()}`);
   }
   await waitForOfficeConnected(page);
 }
@@ -250,9 +248,11 @@ export async function waitForRemotePeer(
 ): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const visible = await page.locator(
-      `.spatial-debug-panel section[data-remote-user-id="${remoteUserId}"]`,
-    ).count();
+    const visible = await page
+      .locator(
+        `.spatial-debug-panel section[data-remote-user-id="${remoteUserId}"]`,
+      )
+      .count();
     if (visible > 0) return;
     await page.waitForTimeout(1_000);
   }
@@ -307,7 +307,10 @@ export async function readProximityRows(page: Page): Promise<
   }>
 > {
   const panel = page.locator(".proximity-debug");
-  await panel.locator("summary").click().catch(() => undefined);
+  await panel
+    .locator("summary")
+    .click()
+    .catch(() => undefined);
   const rows = panel.locator("tbody tr");
   const count = await rows.count();
   const out = [];

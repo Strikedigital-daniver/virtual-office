@@ -175,12 +175,7 @@ export class SpatialAudioMixer {
       source.connect(gain);
       gain.connect(context.destination);
       this.nodes.set(streamKey, { source, gain, stream });
-      registerE2eMixerAnalyser(
-        streamKey,
-        options?.ownerUserId,
-        context,
-        gain,
-      );
+      registerE2eMixerAnalyser(streamKey, options?.ownerUserId, context, gain);
       this.ensurePlayback();
       return true;
     } catch {
@@ -258,7 +253,9 @@ export function syncSpatialAudioGraph(
   }>,
   options?: { forceHtmlPlayback?: boolean },
 ): { attached: string[]; fallbackKeys: string[] } {
-  const desired = remotes.filter((media) => media.ref.kind === "audio");
+  const desired = remotes.filter(
+    (media) => media.ref.kind === "audio" && media.subscribed,
+  );
   const desiredKeys = new Set(desired.map((media) => media.key));
   const fallbackKeys: string[] = [];
 
@@ -305,7 +302,9 @@ export function audibleHtmlAudioKeys(
   fallbackKeys: string[],
   forceHtmlPlayback: boolean,
 ): Set<string> {
-  const audio = remotes.filter((media) => media.ref.kind === "audio");
+  const audio = remotes.filter(
+    (media) => media.ref.kind === "audio" && media.subscribed,
+  );
   if (forceHtmlPlayback) {
     return new Set(audio.map((media) => media.key));
   }

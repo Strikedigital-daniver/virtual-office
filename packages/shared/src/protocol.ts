@@ -46,6 +46,10 @@ export type PlayerState = z.infer<typeof PlayerStateSchema>;
 
 export const ClientEventSchema = z.discriminatedUnion("type", [
   z.object({
+    type: z.literal("session.refresh"),
+    ticket: z.string().min(1).max(2048),
+  }),
+  z.object({
     type: z.literal("player.move"),
     seq: z.number().int().positive(),
     x: z.number().finite(),

@@ -17,6 +17,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 import { isSpatialChatEphemeral } from "./ephemeral";
 import {
+  assertSameMessageRetry,
+  ChatHistoryQuerySchema,
+} from "./message-integrity";
+import {
   ensureEphemeralTempleChatChannels,
   getEphemeralChannelById,
   getOrCreateEphemeralDirectChannel,
@@ -43,6 +47,7 @@ interface MessageRow {
   body: string;
   client_message_id: string | null;
   created_at: string;
+  deleted_at?: string | null;
 }
 
 function mapChannel(row: ChannelRow): SpatialChatChannelSummary {
@@ -223,36 +228,55 @@ export async function getOrCreateDirectChannel(input: {
     .eq("channel_key", channelKey)
     .maybeSingle();
   if (existing.error) throw existing.error;
-  if (existing.data) return mapChannel(existing.data as ChannelRow);
+  let channel = existing.data as ChannelRow | null;
+  if (!channel) {
+    const { data: created, error: createError } = await admin
+      .from("spatial_chat_channels")
+      .insert({
+        id: crypto.randomUUID(),
+        world_id: input.worldId,
+        room_id: "temple-main",
+        channel_key: channelKey,
+        channel_kind: "DIRECT",
+        display_name: input.targetDisplayName,
+      })
+      .select(
+        "id, world_id, room_id, zone_key, channel_key, channel_kind, display_name",
+      )
+      .single();
+    if (createError?.code === "23505") {
+      // Two people may open the same DM at once. Recover the unique winner.
+      const winner = await admin
+        .from("spatial_chat_channels")
+        .select(
+          "id, world_id, room_id, zone_key, channel_key, channel_kind, display_name",
+        )
+        .eq("world_id", input.worldId)
+        .eq("channel_key", channelKey)
+        .single();
+      if (winner.error) throw winner.error;
+      channel = winner.data as ChannelRow;
+    } else {
+      if (createError) throw createError;
+      channel = created as ChannelRow;
+    }
+  }
+  if (!channel) throw new Error("Direct channel was not created");
 
-  const { data: created, error: createError } = await admin
-    .from("spatial_chat_channels")
-    .insert({
-      id: crypto.randomUUID(),
-      world_id: input.worldId,
-      room_id: "temple-main",
-      channel_key: channelKey,
-      channel_kind: "DIRECT",
-      display_name: input.targetDisplayName,
-    })
-    .select(
-      "id, world_id, room_id, zone_key, channel_key, channel_kind, display_name",
-    )
-    .single();
-  if (createError) throw createError;
-
+  // Also repair a previous partial attempt: channel creation can succeed while
+  // the membership write fails. Returning early would leave it undiscoverable.
   const memberIds = [input.requesterUserId, input.targetUserId];
   const { error: membersError } = await admin
     .from("spatial_chat_channel_members")
     .upsert(
       memberIds.map((authUserId) => ({
-        channel_id: (created as ChannelRow).id,
+        channel_id: channel.id,
         auth_user_id: authUserId,
       })),
       { onConflict: "channel_id,auth_user_id" },
     );
   if (membersError) throw membersError;
-  return mapChannel(created as ChannelRow);
+  return mapChannel(channel);
 }
 
 export async function listChannelMessages(input: {
@@ -282,8 +306,13 @@ export async function listChannelMessages(input: {
     .order("id", { ascending: false })
     .limit(limit);
 
-  if (input.cursorCreatedAt) {
-    query = query.lt("created_at", input.cursorCreatedAt);
+  const cursor = ChatHistoryQuerySchema.parse(input);
+  if (cursor.cursorCreatedAt && cursor.cursorId) {
+    // Match the complete descending order. A timestamp alone skips messages
+    // written in the same transaction/clock tick as the last row of a page.
+    query = query.or(
+      `created_at.lt.${cursor.cursorCreatedAt},and(created_at.eq.${cursor.cursorCreatedAt},id.lt.${cursor.cursorId})`,
+    );
   }
 
   const { data, error } = await query;
@@ -326,14 +355,23 @@ export async function insertChannelMessage(input: {
     const existing = await admin
       .from("spatial_chat_messages")
       .select(
-        "id, channel_id, author_user_id, body, client_message_id, created_at",
+        "id, channel_id, author_user_id, body, client_message_id, created_at, deleted_at",
       )
       .eq("author_user_id", input.authorUserId)
       .eq("client_message_id", input.clientMessageId)
       .maybeSingle();
     if (existing.error) throw existing.error;
     if (existing.data) {
-      return mapMessage(existing.data as MessageRow, input.authorDisplayName);
+      const row = existing.data as MessageRow;
+      assertSameMessageRetry(
+        {
+          channelId: row.channel_id,
+          body: row.body,
+          deletedAt: row.deleted_at ?? null,
+        },
+        { channelId: input.channelId, body: normalizedBody },
+      );
+      return mapMessage(row, input.authorDisplayName);
     }
   }
 
@@ -357,13 +395,22 @@ export async function insertChannelMessage(input: {
       const existing = await admin
         .from("spatial_chat_messages")
         .select(
-          "id, channel_id, author_user_id, body, client_message_id, created_at",
+          "id, channel_id, author_user_id, body, client_message_id, created_at, deleted_at",
         )
         .eq("author_user_id", input.authorUserId)
         .eq("client_message_id", input.clientMessageId)
         .single();
       if (existing.error) throw existing.error;
-      return mapMessage(existing.data as MessageRow, input.authorDisplayName);
+      const row = existing.data as MessageRow;
+      assertSameMessageRetry(
+        {
+          channelId: row.channel_id,
+          body: row.body,
+          deletedAt: row.deleted_at ?? null,
+        },
+        { channelId: input.channelId, body: normalizedBody },
+      );
+      return mapMessage(row, input.authorDisplayName);
     }
     throw error;
   }

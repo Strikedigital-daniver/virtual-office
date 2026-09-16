@@ -61,7 +61,10 @@ function displayNameFor(
     typeof user.user_metadata?.display_name === "string"
       ? user.user_metadata.display_name.trim()
       : "";
-  return profile?.display_name?.trim() || metadataName || "Integrante";
+  return (profile?.display_name?.trim() || metadataName || "Integrante").slice(
+    0,
+    40,
+  );
 }
 
 export class ClubSpatialEntitlementProvider implements SpatialEntitlementProvider {
@@ -81,6 +84,7 @@ export class ClubSpatialEntitlementProvider implements SpatialEntitlementProvide
     const { data: profile } = await supabase
       .from("profiles")
       .select("source_id, display_name")
+      .eq("auth_user_id", user.id)
       .maybeSingle();
 
     let hasClubAccess = false;
@@ -89,6 +93,7 @@ export class ClubSpatialEntitlementProvider implements SpatialEntitlementProvide
         .from("entitlements")
         .select("active")
         .eq("key", "club_access")
+        .eq("profile_source_id", profile.source_id)
         .maybeSingle();
       hasClubAccess = Boolean(entitlement?.active);
     }

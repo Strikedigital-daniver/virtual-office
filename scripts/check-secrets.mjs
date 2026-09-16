@@ -1,4 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 const ignoredDirectories = new Set([
@@ -23,7 +24,19 @@ async function sourceFiles(directory = ".") {
   return files;
 }
 
-const source = await sourceFiles();
+// Inspect publishable source, including new files, without reading ignored local
+// credential/configuration files. git fails closed when this is not a checkout.
+const source = [
+  ...new Set(
+    execFileSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { encoding: "utf8" },
+    )
+      .split("\0")
+      .filter(Boolean),
+  ),
+];
 const generatedClientRoots = [
   path.join("apps", "web", ".next", "static"),
   path.join("apps", "web", ".open-next", "assets"),
@@ -42,6 +55,8 @@ const forbiddenAssignments = [
 ];
 const serverOnlyIdentifiers = [
   "SUPABASE_SECRET_KEY",
+  "REALTIME_TICKET_SIGNING_SECRET",
+  "TICKET_SIGNING_SECRET",
   "REALTIME_WORKER_SHARED_SECRET",
   "CLOUDFLARE_REALTIME_APP_SECRET",
   "CLOUDFLARE_TURN_KEY_API_TOKEN",
@@ -58,6 +73,9 @@ for (const file of source) {
 
 for (const file of generatedClientFiles) {
   const contents = await readFile(file, "utf8").catch(() => "");
+  for (const pattern of forbiddenAssignments) {
+    if (pattern.test(contents)) findings.push(`${file}: ${pattern.source}`);
+  }
   for (const identifier of serverOnlyIdentifiers) {
     if (contents.includes(identifier))
       findings.push(`${file}: server-only identifier ${identifier}`);

@@ -26,18 +26,23 @@ export function LoginForm({ nextPath }: LoginFormProps) {
       return;
     }
 
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({
-      email: normalizedEmail,
-      password,
-    });
-    if (error) {
-      setMessage("Correo o contraseña incorrectos.");
-      setSubmitting(false);
-      return;
-    }
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+      if (error) {
+        setMessage("Correo o contraseña incorrectos.");
+        return;
+      }
 
-    window.location.assign(nextPath);
+      window.location.assign(nextPath);
+    } catch {
+      setMessage("No se pudo conectar. Intenta entrar nuevamente.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (

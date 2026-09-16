@@ -47,7 +47,7 @@ export async function listVisibleChannels(context: SpatialChatRequestContext) {
     context.authUserId,
   );
   return visibleChannelsForAccess(context.accessClass, context.authUserId, [
-    ...canonical,
+    ...canonical.filter((channel) => channel.channelKind !== "DIRECT"),
     ...directs,
   ]);
 }
@@ -77,16 +77,17 @@ export async function resolveDisplayName(userId: string): Promise<string> {
   const { data: profile } = await admin
     .from("profiles")
     .select("display_name")
-    .eq("id", userId)
+    .eq("auth_user_id", userId)
     .maybeSingle();
-  if (profile?.display_name?.trim()) return profile.display_name.trim();
+  if (profile?.display_name?.trim())
+    return profile.display_name.trim().slice(0, 40);
 
   const { data: userData } = await admin.auth.admin.getUserById(userId);
   const metadataName =
     typeof userData.user?.user_metadata?.display_name === "string"
       ? userData.user.user_metadata.display_name.trim()
       : "";
-  return metadataName || "Integrante";
+  return (metadataName || "Integrante").slice(0, 40);
 }
 
 export async function resolveAccessClassForUserId(
@@ -111,7 +112,7 @@ export async function resolveAccessClassForUserId(
   const { data: profile } = await admin
     .from("profiles")
     .select("source_id")
-    .eq("id", authUserId)
+    .eq("auth_user_id", authUserId)
     .maybeSingle();
 
   if (profile?.source_id) {
@@ -119,6 +120,7 @@ export async function resolveAccessClassForUserId(
       .from("entitlements")
       .select("active")
       .eq("key", "club_access")
+      .eq("profile_source_id", profile.source_id)
       .maybeSingle();
     if (entitlement?.active) return "CLUB_MEMBER";
   }
